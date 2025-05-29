@@ -16,7 +16,9 @@ OPENROUTER_MODEL = os.environ.get('OPENROUTER_MODEL', 'openai/gpt-3.5-turbo')
 def get_api_headers():
     return {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://vael.local.app",
+        "X-Title": "VAEL Interface"
     }
 
 # Environment information

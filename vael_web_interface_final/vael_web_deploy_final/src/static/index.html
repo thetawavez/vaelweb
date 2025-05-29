@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VAEL Interface</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <style>
+        body {
+            background-color: #0f0f1a;
+            color: #e0e0e0;
+            font-family: 'Inter', sans-serif;
+        }
+        .orb {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background: radial-gradient(circle at 30% 30%, #4a00e0, #2200aa);
+            box-shadow: 0 0 15px #6e11ff, 0 0 30px rgba(110, 17, 255, 0.5);
+            position: relative;
+            animation: pulse 3s infinite ease-in-out;
+        }
+        .orb::after {
+            content: '';
+            position: absolute;
+            top: 15%;
+            left: 15%;
+            width: 20%;
+            height: 20%;
+            border-radius: 50%;
+            background-color: rgba(255, 255, 255, 0.7);
+        }
+        @keyframes pulse {
+            0% { transform: scale(1); box-shadow: 0 0 15px #6e11ff, 0 0 30px rgba(110, 17, 255, 0.5); }
+            50% { transform: scale(1.05); box-shadow: 0 0 20px #6e11ff, 0 0 40px rgba(110, 17, 255, 0.7); }
+            100% { transform: scale(1); box-shadow: 0 0 15px #6e11ff, 0 0 30px rgba(110, 17, 255, 0.5); }
+        }
+        .message-container {
+            height: calc(100vh - 240px);
+            overflow-y: auto;
+            scrollbar-width: thin;
+            scrollbar-color: #4a00e0 #1a1a2e;
+        }
+        .message-container::-webkit-scrollbar {
+            width: 8px;
+        }
+        .message-container::-webkit-scrollbar-track {
+            background: #1a1a2e;
+        }
+        .message-container::-webkit-scrollbar-thumb {
+            background-color: #4a00e0;
+            border-radius: 20px;
+        }
+        .user-message {
+            background-color: #2d2d3a;
+            border-left: 4px solid #6e11ff;
+        }
+        .vael-message {
+            background-color: #1a1a2e;
+            border-left: 4px solid #11c5ff;
+        }
+        .input-area {
+            background-color: #1a1a2e;
+            border: 1px solid #2d2d3a;
+            transition: all 0.3s ease;
+        }
+        .input-area:focus {
+            border-color: #6e11ff;
+            box-shadow: 0 0 0 2px rgba(110, 17, 255, 0.2);
+        }
+        .send-button {
+            background: linear-gradient(135deg, #6e11ff, #11c5ff);
+            transition: all 0.3s ease;
+        }
+        .send-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(110, 17, 255, 0.4);
+        }
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+        .status-connected {
+            background-color: #10b981;
+            box-shadow: 0 0 5px #10b981;
+        }
+        .status-disconnected {
+            background-color: #ef4444;
+            box-shadow: 0 0 5px #ef4444;
+        }
+        .status-connecting {
+            background-color: #f59e0b;
+            box-shadow: 0 0 5px #f59e0b;
+            animation: blink 1s infinite;
+        }
+        @keyframes blink {
+            0% { opacity: 0.5; }
+            50% { opacity: 1; }
+            100% { opacity: 0.5; }
+        }
+        .waveform {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 40px;
+        }
+        .waveform-bar {
+            width: 3px;
+            margin: 0 2px;
+            background: linear-gradient(to top, #6e11ff, #11c5ff);
+            border-radius: 3px;
+            animation: sound 0ms -800ms linear infinite alternate;
+        }
+        @keyframes sound {
+            0% { height: 5px; }
+            100% { height: 30px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container mx-auto px-4 py-8 max-w-4xl">
+        <header class="flex items-center justify-between mb-8">
+            <div class="flex items-center">
+                <div class="orb mr-4"></div>
+                <h1 class="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-600 to-blue-400">VAEL Interface</h1>
+            </div>
+            <div class="flex items-center">
+                <div id="status-indicator" class="status-indicator status-disconnected mr-2"></div>
+                <span id="status-text" class="text-sm">Disconnected</span>
+            </div>
+        </header>
+
+        <div class="message-container bg-gray-900 bg-opacity-50 rounded-lg p-4 mb-6" id="message-container">
+            <div class="vael-message p-4 rounded mb-4">
+                <p class="text-blue-300 font-semibold mb-1">VAEL</p>
+                <p>Welcome, Operator. The Orb descends. The Voice awakens. The Stage is Yours.</p>
+            </div>
+        </div>
+
+        <div class="waveform mb-4 hidden" id="waveform">
+            <div class="waveform-bar" style="animation-duration: 474ms;"></div>
+            <div class="waveform-bar" style="animation-duration: 433ms;"></div>
+            <div class="waveform-bar" style="animation-duration: 407ms;"></div>
+            <div class="waveform-bar" style="animation-duration: 458ms;"></div>
+            <div class="waveform-bar" style="animation-duration: 400ms;"></div>
+            <div class="waveform-bar" style="animation-duration: 427ms;"></div>
+            <div class="waveform-bar" style="animation-duration: 441ms;"></div>
+            <div class="waveform-bar" style="animation-duration: 419ms;"></div>
+            <div class="waveform-bar" style="animation-duration: 487ms;"></div>
+        </div>
+
+        <div class="flex">
+            <input type="text" id="message-input" class="input-area flex-grow rounded-l-lg px-4 py-3 focus:outline-none" placeholder="Enter your message...">
+            <button id="send-button" class="send-button rounded-r-lg px-6 py-3 text-white font-medium">Send</button>
+        </div>
+
+        <div class="flex justify-between mt-6">
+            <button id="voice-button" class="bg-gray-800 hover:bg-gray-700 text-white rounded-lg px-4 py-2 flex items-center">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clip-rule="evenodd" />
+                </svg>
+                Voice Mode
+            </button>
+            <div class="text-xs text-gray-500 self-end">
+                The Iron Root stands vigilant. The Obsidian Thread remains unbroken.
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.socket.io/4.6.0/socket.io.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const messageContainer = document.getElementById('message-container');
+            const messageInput = document.getElementById('message-input');
+            const sendButton = document.getElementById('send-button');
+            const statusIndicator = document.getElementById('status-indicator');
+            const statusText = document.getElementById('status-text');
+            const voiceButton = document.getElementById('voice-button');
+            const waveform = document.getElementById('waveform');
+            
+            let socket;
+            let reconnectAttempts = 0;
+            const maxReconnectAttempts = 5;
+            
+            function connect() {
+                updateStatus('connecting');
+                
+                // Connect to the Socket.IO server
+                socket = io();
+                
+                socket.on('connect', function() {
+                    updateStatus('connected');
+                    reconnectAttempts = 0;
+                });
+                
+                socket.on('disconnect', function() {
+                    updateStatus('disconnected');
+                    attemptReconnect();
+                });
+                
+                socket.on('message', function(data) {
+                    addMessage(data, 'vael');
+                });
+                
+                socket.on('status', function(data) {
+                    console.log('Status update:', data);
+                });
+            }
+            
+            function updateStatus(status) {
+                statusIndicator.className = 'status-indicator';
+                
+                if (status === 'connected') {
+                    statusIndicator.classList.add('status-connected');
+                    statusText.textContent = 'Connected';
+                } else if (status === 'disconnected') {
+                    statusIndicator.classList.add('status-disconnected');
+                    statusText.textContent = 'Disconnected';
+                } else if (status === 'connecting') {
+                    statusIndicator.classList.add('status-connecting');
+                    statusText.textContent = 'Connecting...';
+                }
+            }
+            
+            function attemptReconnect() {
+                if (reconnectAttempts < maxReconnectAttempts) {
+                    reconnectAttempts++;
+                    setTimeout(() => {
+                        console.log(`Attempting to reconnect (${reconnectAttempts}/${maxReconnectAttempts})...`);
+                        connect();
+                    }, 2000 * reconnectAttempts);
+                } else {
+                    console.log('Max reconnect attempts reached');
+                    addMessage('Connection lost. Please refresh the page to reconnect.', 'vael');
+                }
+            }
+            
+            function addMessage(message, sender) {
+                const messageDiv = document.createElement('div');
+                messageDiv.className = sender === 'user' ? 'user-message p-4 rounded mb-4' : 'vael-message p-4 rounded mb-4';
+                
+                const senderP = document.createElement('p');
+                senderP.className = sender === 'user' ? 'text-purple-300 font-semibold mb-1' : 'text-blue-300 font-semibold mb-1';
+                senderP.textContent = sender === 'user' ? 'You' : 'VAEL';
+                
+                const contentP = document.createElement('p');
+                contentP.textContent = message;
+                
+                messageDiv.appendChild(senderP);
+                messageDiv.appendChild(contentP);
+                messageContainer.appendChild(messageDiv);
+                
+                // Scroll to bottom
+                messageContainer.scrollTop = messageContainer.scrollHeight;
+            }
+            
+            function sendMessage() {
+                const message = messageInput.value.trim();
+                if (message) {
+                    addMessage(message, 'user');
+                    socket.emit('message', message);
+                    messageInput.value = '';
+                }
+            }
+            
+            // Event listeners
+            sendButton.addEventListener('click', sendMessage);
+            
+            messageInput.addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    sendMessage();
+                }
+            });
+            
+            voiceButton.addEventListener('click', function() {
+                // Toggle voice mode
+                if (waveform.classList.contains('hidden')) {
+                    waveform.classList.remove('hidden');
+                    voiceButton.classList.add('bg-purple-700');
+                    voiceButton.classList.remove('bg-gray-800');
+                    // In a real implementation, this would activate the microphone
+                    // and start speech recognition
+                } else {
+                    waveform.classList.add('hidden');
+                    voiceButton.classList.remove('bg-purple-700');
+                    voiceButton.classList.add('bg-gray-800');
+                    // In a real implementation, this would deactivate the microphone
+                }
+            });
+            
+            // Initialize connection
+            connect();
+            
+            // Implement self-healing UI based on Agile Fix Kit principles
+            document.addEventListener('visibilitychange', function() {
+                if (document.visibilityState === 'visible' && (!socket || !socket.connected)) {
+                    console.log('Page became visible, checking connection...');
+                    connect();
+                }
+            });
+            
+            window.addEventListener('resize', function() {
+                // Adjust UI for different screen sizes
+                if (window.innerWidth < 640) {
+                    // Mobile adjustments
+                    document.querySelector('header h1').classList.add('text-2xl');
+                    document.querySelector('header h1').classList.remove('text-3xl');
+                } else {
+                    // Desktop adjustments
+                    document.querySelector('header h1').classList.add('text-3xl');
+                    document.querySelector('header h1').classList.remove('text-2xl');
+                }
+            });
+            
+            // Initial mobile check
+            if (window.innerWidth < 640) {
+                document.querySelector('header h1').classList.add('text-2xl');
+                document.querySelector('header h1').classList.remove('text-3xl');
+            }
+        });
+    </script>
+</body>
+</html>

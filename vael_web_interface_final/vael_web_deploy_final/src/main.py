@@ -10,6 +10,10 @@ import logging
 # DON'T CHANGE THIS !!!
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+# Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
+
 from flask import Flask, send_from_directory, request, jsonify
 from flask_socketio import SocketIO, emit
 from src.models.user import db
@@ -165,4 +169,4 @@ def health_check():
 
 if __name__ == '__main__':
     logger.info(f"Starting VAEL Web Interface on {FLASK_HOST}:{FLASK_PORT}")
-    socketio.run(app, host=FLASK_HOST, port=FLASK_PORT, debug=FLASK_DEBUG)
+    socketio.run(app, host=FLASK_HOST, port=FLASK_PORT, debug=FLASK_DEBUG, allow_unsafe_werkzeug=True)

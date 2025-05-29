@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VAEL Interface</title>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         body {
             background-color: #0f0f1a;
@@ -186,6 +187,69 @@
             background-color: #f59e0b;
             box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);
         }
+        /* Voice recognition pulse animation */
+        .mic-pulse {
+            animation: mic-pulse 1.5s ease-out infinite;
+        }
+        @keyframes mic-pulse {
+            0% { box-shadow: 0 0 0 0 rgba(110, 17, 255, 0.7); }
+            70% { box-shadow: 0 0 0 10px rgba(110, 17, 255, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(110, 17, 255, 0); }
+        }
+        /* Audio controls */
+        .audio-controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .audio-button {
+            background-color: #2d2d3a;
+            color: #e0e0e0;
+            border: none;
+            border-radius: 50%;
+            width: 36px;
+            height: 36px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .audio-button:hover {
+            background-color: #3d3d4a;
+        }
+        .audio-button.active {
+            background-color: #6e11ff;
+            color: white;
+        }
+        /* Voice recognition indicator */
+        .voice-indicator {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 24px;
+            height: 24px;
+        }
+        .voice-indicator .ring {
+            position: absolute;
+            border-radius: 50%;
+            border: 2px solid #6e11ff;
+            width: 100%;
+            height: 100%;
+            opacity: 0;
+            animation: voice-ring 2s infinite;
+        }
+        .voice-indicator .ring:nth-child(2) {
+            animation-delay: 0.5s;
+        }
+        .voice-indicator .ring:nth-child(3) {
+            animation-delay: 1s;
+        }
+        @keyframes voice-ring {
+            0% { transform: scale(0.5); opacity: 0.8; }
+            100% { transform: scale(2); opacity: 0; }
+        }
     </style>
 </head>
 <body>
@@ -217,6 +281,18 @@
             <span class="text-blue-300 text-sm">VAEL is thinking...</span>
         </div>
 
+        <div id="voice-recognition-indicator" class="hidden mb-2">
+            <div class="flex items-center">
+                <div class="voice-indicator mr-2">
+                    <div class="ring"></div>
+                    <div class="ring"></div>
+                    <div class="ring"></div>
+                    <div class="bg-red-500 w-4 h-4 rounded-full"></div>
+                </div>
+                <span class="text-red-400 text-sm">Listening...</span>
+            </div>
+        </div>
+
         <div class="waveform mb-4 hidden" id="waveform">
             <div class="waveform-bar" style="animation-duration: 474ms;"></div>
             <div class="waveform-bar" style="animation-duration: 433ms;"></div>
@@ -235,12 +311,18 @@
         </div>
 
         <div class="flex justify-between mt-6">
-            <button id="voice-button" class="bg-gray-800 hover:bg-gray-700 text-white rounded-lg px-4 py-2 flex items-center">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
-                    <path fill-rule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clip-rule="evenodd" />
-                </svg>
-                Voice Mode
-            </button>
+            <div class="flex space-x-3">
+                <button id="voice-button" class="bg-gray-800 hover:bg-gray-700 text-white rounded-lg px-4 py-2 flex items-center">
+                    <i class="fas fa-microphone mr-2"></i>
+                    Voice Mode
+                </button>
+                <button id="mute-button" class="audio-button" title="Toggle speech output">
+                    <i class="fas fa-volume-up"></i>
+                </button>
+                <button id="tts-toggle-button" class="audio-button" title="Toggle between native and ElevenLabs TTS">
+                    <i class="fas fa-exchange-alt"></i>
+                </button>
+            </div>
             <div class="text-xs text-gray-500 self-end">
                 The Iron Root stands vigilant. The Obsidian Thread remains unbroken.
             </div>
@@ -259,8 +341,11 @@
             const statusIndicator = document.getElementById('status-indicator');
             const statusText = document.getElementById('status-text');
             const voiceButton = document.getElementById('voice-button');
+            const muteButton = document.getElementById('mute-button');
+            const ttsToggleButton = document.getElementById('tts-toggle-button');
             const waveform = document.getElementById('waveform');
             const typingIndicator = document.getElementById('typing-indicator');
+            const voiceRecognitionIndicator = document.getElementById('voice-recognition-indicator');
             const toast = document.getElementById('toast');
             
             let socket;
@@ -271,6 +356,231 @@
             let isWaitingForResponse = false;
             let pingInterval;
             let pingTimeout;
+            
+            // Speech recognition variables
+            let recognition;
+            let isListening = false;
+            let isMuted = false;
+            let useElevenLabs = true;
+            let currentAudio = null;
+            
+            // Initialize speech recognition
+            function initSpeechRecognition() {
+                // Check for browser support
+                const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                if (!SpeechRecognition) {
+                    showToast("Speech recognition not supported in this browser", "warning");
+                    return false;
+                }
+                
+                recognition = new SpeechRecognition();
+                recognition.continuous = true;
+                recognition.interimResults = true;
+                recognition.lang = 'en-US';
+                
+                // Recognition event handlers
+                recognition.onstart = function() {
+                    isListening = true;
+                    voiceRecognitionIndicator.classList.remove('hidden');
+                    voiceButton.classList.add('bg-purple-700', 'mic-pulse');
+                    voiceButton.classList.remove('bg-gray-800');
+                    showToast("Voice recognition active", "success", 2000);
+                };
+                
+                recognition.onend = function() {
+                    isListening = false;
+                    voiceRecognitionIndicator.classList.add('hidden');
+                    voiceButton.classList.remove('bg-purple-700', 'mic-pulse');
+                    voiceButton.classList.add('bg-gray-800');
+                    
+                    // Auto-restart if voice mode is still active
+                    if (waveform.classList.contains('hidden') === false) {
+                        try {
+                            recognition.start();
+                        } catch (e) {
+                            console.error("Failed to restart speech recognition:", e);
+                            showToast("Voice recognition error. Trying again...", "warning");
+                            setTimeout(() => {
+                                if (waveform.classList.contains('hidden') === false) {
+                                    try { recognition.start(); } catch(e) {}
+                                }
+                            }, 1000);
+                        }
+                    }
+                };
+                
+                recognition.onerror = function(event) {
+                    console.error("Speech recognition error", event.error);
+                    if (event.error === 'not-allowed') {
+                        showToast("Microphone access denied", "error");
+                        waveform.classList.add('hidden');
+                        voiceButton.classList.remove('bg-purple-700', 'mic-pulse');
+                        voiceButton.classList.add('bg-gray-800');
+                    } else {
+                        showToast(`Recognition error: ${event.error}`, "warning");
+                    }
+                };
+                
+                recognition.onresult = function(event) {
+                    let finalTranscript = '';
+                    let interimTranscript = '';
+                    
+                    for (let i = event.resultIndex; i < event.results.length; i++) {
+                        const transcript = event.results[i][0].transcript;
+                        if (event.results[i].isFinal) {
+                            finalTranscript += transcript;
+                        } else {
+                            interimTranscript += transcript;
+                        }
+                    }
+                    
+                    // Send final transcript if it's not empty
+                    if (finalTranscript.trim() !== '') {
+                        sendMessage(finalTranscript.trim());
+                    }
+                };
+                
+                return true;
+            }
+            
+            // Initialize speech synthesis
+            function initSpeechSynthesis() {
+                if (!window.speechSynthesis) {
+                    showToast("Text-to-speech not supported in this browser", "warning");
+                    return false;
+                }
+                
+                // Set initial mute state
+                updateMuteButton();
+                
+                return true;
+            }
+            
+            // Toggle mute state
+            function toggleMute() {
+                isMuted = !isMuted;
+                updateMuteButton();
+                
+                if (isMuted) {
+                    if (currentAudio) {
+                        currentAudio.pause();
+                    }
+                    if (window.speechSynthesis) {
+                        window.speechSynthesis.cancel();
+                    }
+                    showToast("Speech output muted", "info", 1500);
+                } else {
+                    showToast("Speech output enabled", "info", 1500);
+                }
+            }
+            
+            // Update mute button appearance
+            function updateMuteButton() {
+                if (isMuted) {
+                    muteButton.innerHTML = '<i class="fas fa-volume-mute"></i>';
+                    muteButton.classList.add('active');
+                } else {
+                    muteButton.innerHTML = '<i class="fas fa-volume-up"></i>';
+                    muteButton.classList.remove('active');
+                }
+            }
+            
+            // Toggle TTS provider
+            function toggleTTSProvider() {
+                useElevenLabs = !useElevenLabs;
+                updateTTSToggleButton();
+                
+                if (useElevenLabs) {
+                    showToast("Using ElevenLabs TTS", "info", 1500);
+                } else {
+                    showToast("Using native TTS", "info", 1500);
+                }
+            }
+            
+            // Update TTS toggle button appearance
+            function updateTTSToggleButton() {
+                if (useElevenLabs) {
+                    ttsToggleButton.innerHTML = '<i class="fas fa-robot"></i>';
+                    ttsToggleButton.classList.add('active');
+                } else {
+                    ttsToggleButton.innerHTML = '<i class="fas fa-laptop"></i>';
+                    ttsToggleButton.classList.remove('active');
+                }
+            }
+            
+            // Speak text using appropriate TTS
+            function speakText(text) {
+                if (isMuted) return;
+                
+                // Cancel any ongoing speech
+                if (window.speechSynthesis) {
+                    window.speechSynthesis.cancel();
+                }
+                if (currentAudio) {
+                    currentAudio.pause();
+                    currentAudio = null;
+                }
+                
+                if (useElevenLabs) {
+                    // Use ElevenLabs TTS
+                    speakWithElevenLabs(text);
+                } else {
+                    // Use native TTS
+                    speakWithNativeTTS(text);
+                }
+            }
+            
+            // Speak text using native TTS
+            function speakWithNativeTTS(text) {
+                if (!window.speechSynthesis || isMuted) return;
+                
+                const utterance = new SpeechSynthesisUtterance(text);
+                
+                // Try to find a good voice
+                const voices = window.speechSynthesis.getVoices();
+                const preferredVoices = voices.filter(voice => 
+                    voice.lang.startsWith('en') && 
+                    (voice.name.includes('Google') || voice.name.includes('Premium'))
+                );
+                
+                if (preferredVoices.length > 0) {
+                    utterance.voice = preferredVoices[0];
+                }
+                
+                utterance.rate = 1.0;
+                utterance.pitch = 1.0;
+                
+                window.speechSynthesis.speak(utterance);
+            }
+            
+            // Speak text using ElevenLabs TTS
+            function speakWithElevenLabs(text) {
+                if (isMuted) return;
+                
+                fetch('/api/tts', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ text: text })
+                })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('TTS API error');
+                    }
+                    return response.blob();
+                })
+                .then(audioBlob => {
+                    const audioUrl = URL.createObjectURL(audioBlob);
+                    currentAudio = new Audio(audioUrl);
+                    currentAudio.play();
+                })
+                .catch(error => {
+                    console.error("ElevenLabs TTS error:", error);
+                    showToast("ElevenLabs TTS failed, falling back to native TTS", "warning");
+                    speakWithNativeTTS(text);
+                });
+            }
             
             // Toast notification functions
             function showToast(message, type = 'error', duration = 5000) {
@@ -388,6 +698,9 @@
                         isWaitingForResponse = false;
                         enableInput();
                         addMessage(data, 'vael');
+                        
+                        // Speak the response
+                        speakText(data);
                     });
                     
                     socket.on('error', function(error) {
@@ -536,9 +849,9 @@
                 messageInput.placeholder = 'Enter your message...';
             }
             
-            function sendMessage() {
-                const message = messageInput.value.trim();
-                if (!message) return;
+            function sendMessage(message = null) {
+                const msg = message || messageInput.value.trim();
+                if (!msg) return;
                 
                 if (!socket || !socket.connected) {
                     showToast('Not connected to server. Attempting to reconnect...', 'warning');
@@ -553,7 +866,7 @@
                 
                 try {
                     // Add user message to UI
-                    addMessage(message, 'user');
+                    addMessage(msg, 'user');
                     
                     // Show typing indicator
                     showTypingIndicator();
@@ -566,7 +879,7 @@
                     messageInput.value = '';
                     
                     // Send message to server
-                    socket.emit('message', message);
+                    socket.emit('message', msg);
                     
                     // Set timeout for response
                     setTimeout(() => {
@@ -588,8 +901,53 @@
                 }
             }
             
+            // Toggle voice mode
+            function toggleVoiceMode() {
+                if (waveform.classList.contains('hidden')) {
+                    // Enable voice mode
+                    waveform.classList.remove('hidden');
+                    voiceButton.classList.add('bg-purple-700');
+                    voiceButton.classList.remove('bg-gray-800');
+                    
+                    // Initialize speech recognition if not already done
+                    if (!recognition && !initSpeechRecognition()) {
+                        showToast('Speech recognition not supported in this browser', 'error');
+                        waveform.classList.add('hidden');
+                        voiceButton.classList.remove('bg-purple-700');
+                        voiceButton.classList.add('bg-gray-800');
+                        return;
+                    }
+                    
+                    // Start listening
+                    try {
+                        recognition.start();
+                    } catch (e) {
+                        console.error("Failed to start speech recognition:", e);
+                        showToast('Failed to start speech recognition', 'error');
+                        waveform.classList.add('hidden');
+                        voiceButton.classList.remove('bg-purple-700');
+                        voiceButton.classList.add('bg-gray-800');
+                    }
+                } else {
+                    // Disable voice mode
+                    waveform.classList.add('hidden');
+                    voiceRecognitionIndicator.classList.add('hidden');
+                    voiceButton.classList.remove('bg-purple-700', 'mic-pulse');
+                    voiceButton.classList.add('bg-gray-800');
+                    
+                    // Stop listening
+                    if (recognition) {
+                        try {
+                            recognition.stop();
+                        } catch (e) {
+                            console.error("Failed to stop speech recognition:", e);
+                        }
+                    }
+                }
+            }
+            
             // Event listeners
-            sendButton.addEventListener('click', sendMessage);
+            sendButton.addEventListener('click', () => sendMessage());
             
             messageInput.addEventListener('keypress', function(e) {
                 if (e.key === 'Enter') {
@@ -597,22 +955,15 @@
                 }
             });
             
-            voiceButton.addEventListener('click', function() {
-                // Toggle voice mode
-                if (waveform.classList.contains('hidden')) {
-                    waveform.classList.remove('hidden');
-                    voiceButton.classList.add('bg-purple-700');
-                    voiceButton.classList.remove('bg-gray-800');
-                    showToast('Voice mode is not yet implemented', 'warning');
-                    // In a real implementation, this would activate the microphone
-                    // and start speech recognition
-                } else {
-                    waveform.classList.add('hidden');
-                    voiceButton.classList.remove('bg-purple-700');
-                    voiceButton.classList.add('bg-gray-800');
-                    // In a real implementation, this would deactivate the microphone
-                }
-            });
+            voiceButton.addEventListener('click', toggleVoiceMode);
+            muteButton.addEventListener('click', toggleMute);
+            ttsToggleButton.addEventListener('click', toggleTTSProvider);
+            
+            // Initialize speech synthesis
+            initSpeechSynthesis();
+            
+            // Update TTS toggle button initial state
+            updateTTSToggleButton();
             
             // Initialize connection
             connect();
@@ -674,7 +1025,30 @@
                 if (socket && socket.connected) {
                     socket.disconnect();
                 }
+                
+                // Stop speech recognition if active
+                if (recognition && isListening) {
+                    recognition.stop();
+                }
+                
+                // Stop any ongoing speech
+                if (window.speechSynthesis) {
+                    window.speechSynthesis.cancel();
+                }
+                if (currentAudio) {
+                    currentAudio.pause();
+                }
             });
+            
+            // Initialize voices for speech synthesis
+            if (window.speechSynthesis) {
+                // Some browsers need this to initialize the voices
+                window.speechSynthesis.onvoiceschanged = function() {
+                    console.log("Voices loaded:", window.speechSynthesis.getVoices().length);
+                };
+                // Force loading of voices
+                window.speechSynthesis.getVoices();
+            }
         });
     </script>
 </body>

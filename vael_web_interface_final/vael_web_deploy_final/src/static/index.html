@@ -59,6 +59,10 @@
             background-color: #1a1a2e;
             border-left: 4px solid #11c5ff;
         }
+        .error-message {
+            background-color: #2d1a1a;
+            border-left: 4px solid #ff3333;
+        }
         .input-area {
             background-color: #1a1a2e;
             border: 1px solid #2d2d3a;
@@ -68,13 +72,21 @@
             border-color: #6e11ff;
             box-shadow: 0 0 0 2px rgba(110, 17, 255, 0.2);
         }
+        .input-area:disabled {
+            opacity: 0.7;
+            cursor: not-allowed;
+        }
         .send-button {
             background: linear-gradient(135deg, #6e11ff, #11c5ff);
             transition: all 0.3s ease;
         }
-        .send-button:hover {
+        .send-button:hover:not(:disabled) {
             transform: translateY(-2px);
             box-shadow: 0 5px 15px rgba(110, 17, 255, 0.4);
+        }
+        .send-button:disabled {
+            opacity: 0.7;
+            cursor: not-allowed;
         }
         .status-indicator {
             width: 12px;
@@ -116,6 +128,64 @@
             0% { height: 5px; }
             100% { height: 30px; }
         }
+        .typing-indicator {
+            display: inline-flex;
+            align-items: center;
+            margin: 0 0.5rem;
+        }
+        .typing-indicator span {
+            height: 8px;
+            width: 8px;
+            margin: 0 1px;
+            background-color: #11c5ff;
+            border-radius: 50%;
+            display: inline-block;
+            opacity: 0.4;
+        }
+        .typing-indicator span:nth-child(1) {
+            animation: typing 1s infinite 0s;
+        }
+        .typing-indicator span:nth-child(2) {
+            animation: typing 1s infinite 0.2s;
+        }
+        .typing-indicator span:nth-child(3) {
+            animation: typing 1s infinite 0.4s;
+        }
+        @keyframes typing {
+            0% { opacity: 0.4; transform: scale(1); }
+            50% { opacity: 1; transform: scale(1.2); }
+            100% { opacity: 0.4; transform: scale(1); }
+        }
+        .toast {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 12px 20px;
+            border-radius: 8px;
+            color: white;
+            font-weight: 500;
+            max-width: 300px;
+            z-index: 100;
+            transform: translateY(-100px);
+            opacity: 0;
+            transition: all 0.3s ease;
+        }
+        .toast.show {
+            transform: translateY(0);
+            opacity: 1;
+        }
+        .toast-error {
+            background-color: #ef4444;
+            box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+        }
+        .toast-success {
+            background-color: #10b981;
+            box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+        }
+        .toast-warning {
+            background-color: #f59e0b;
+            box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);
+        }
     </style>
 </head>
 <body>
@@ -136,6 +206,15 @@
                 <p class="text-blue-300 font-semibold mb-1">VAEL</p>
                 <p>Welcome, Operator. The Orb descends. The Voice awakens. The Stage is Yours.</p>
             </div>
+        </div>
+
+        <div id="typing-indicator" class="hidden mb-2">
+            <div class="typing-indicator">
+                <span></span>
+                <span></span>
+                <span></span>
+            </div>
+            <span class="text-blue-300 text-sm">VAEL is thinking...</span>
         </div>
 
         <div class="waveform mb-4 hidden" id="waveform">
@@ -168,6 +247,9 @@
         </div>
     </div>
 
+    <!-- Toast notification container -->
+    <div id="toast" class="toast" role="alert"></div>
+
     <script src="https://cdn.socket.io/4.6.0/socket.io.min.js"></script>
     <script>
         document.addEventListener('DOMContentLoaded', function() {
@@ -178,34 +260,152 @@
             const statusText = document.getElementById('status-text');
             const voiceButton = document.getElementById('voice-button');
             const waveform = document.getElementById('waveform');
+            const typingIndicator = document.getElementById('typing-indicator');
+            const toast = document.getElementById('toast');
             
             let socket;
             let reconnectAttempts = 0;
-            const maxReconnectAttempts = 5;
+            let reconnectTimeout;
+            const maxReconnectAttempts = 10;
+            const baseReconnectDelay = 1000; // 1 second
+            let isWaitingForResponse = false;
+            let pingInterval;
+            let pingTimeout;
+            
+            // Toast notification functions
+            function showToast(message, type = 'error', duration = 5000) {
+                clearTimeout(toast.hideTimeout);
+                
+                toast.className = 'toast';
+                toast.classList.add(`toast-${type}`);
+                toast.textContent = message;
+                
+                // Force reflow to restart animation
+                void toast.offsetWidth;
+                
+                toast.classList.add('show');
+                
+                toast.hideTimeout = setTimeout(() => {
+                    toast.classList.remove('show');
+                }, duration);
+            }
             
             function connect() {
                 updateStatus('connecting');
                 
-                // Connect to the Socket.IO server
-                socket = io();
+                // Clear any existing reconnection timeout
+                if (reconnectTimeout) {
+                    clearTimeout(reconnectTimeout);
+                    reconnectTimeout = null;
+                }
                 
-                socket.on('connect', function() {
-                    updateStatus('connected');
-                    reconnectAttempts = 0;
-                });
+                // Clear any existing ping interval
+                if (pingInterval) {
+                    clearInterval(pingInterval);
+                    pingInterval = null;
+                }
                 
-                socket.on('disconnect', function() {
+                // Socket.IO connection options for better reliability
+                const socketOptions = {
+                    reconnection: false, // We'll handle reconnection ourselves
+                    timeout: 10000, // 10 seconds connection timeout
+                    transports: ['websocket', 'polling'] // Try WebSocket first, fallback to polling
+                };
+                
+                // Connect to the Socket.IO server with options
+                try {
+                    socket = io(window.location.origin, socketOptions);
+                    
+                    socket.on('connect', function() {
+                        console.log('Connected to server');
+                        updateStatus('connected');
+                        reconnectAttempts = 0;
+                        
+                        // Set up ping interval to detect disconnections
+                        pingInterval = setInterval(() => {
+                            // Clear any existing ping timeout
+                            if (pingTimeout) {
+                                clearTimeout(pingTimeout);
+                            }
+                            
+                            // Send ping and expect pong
+                            socket.emit('message', 'ping');
+                            
+                            // Set timeout for pong response
+                            pingTimeout = setTimeout(() => {
+                                console.log('Ping timeout - connection may be lost');
+                                socket.disconnect();
+                            }, 5000);
+                        }, 30000); // Send ping every 30 seconds
+                        
+                        showToast('Connected to VAEL server', 'success', 3000);
+                    });
+                    
+                    socket.on('disconnect', function(reason) {
+                        console.log('Disconnected from server:', reason);
+                        updateStatus('disconnected');
+                        
+                        // Clear ping interval on disconnect
+                        if (pingInterval) {
+                            clearInterval(pingInterval);
+                            pingInterval = null;
+                        }
+                        
+                        // Clear ping timeout on disconnect
+                        if (pingTimeout) {
+                            clearTimeout(pingTimeout);
+                            pingTimeout = null;
+                        }
+                        
+                        // Attempt reconnection with exponential backoff
+                        attemptReconnect();
+                    });
+                    
+                    socket.on('connect_error', function(error) {
+                        console.error('Connection error:', error);
+                        updateStatus('disconnected');
+                        showToast('Failed to connect to server: ' + error.message, 'error');
+                        
+                        // Attempt reconnection with exponential backoff
+                        attemptReconnect();
+                    });
+                    
+                    socket.on('message', function(data) {
+                        // Clear ping timeout when we receive any message (including pong)
+                        if (pingTimeout) {
+                            clearTimeout(pingTimeout);
+                            pingTimeout = null;
+                        }
+                        
+                        // Handle pong response
+                        if (data === 'pong') {
+                            console.log('Received pong from server');
+                            return;
+                        }
+                        
+                        // Handle regular messages
+                        hideTypingIndicator();
+                        isWaitingForResponse = false;
+                        enableInput();
+                        addMessage(data, 'vael');
+                    });
+                    
+                    socket.on('error', function(error) {
+                        console.error('Socket error:', error);
+                        addErrorMessage('An error occurred: ' + error);
+                        isWaitingForResponse = false;
+                        enableInput();
+                    });
+                    
+                    socket.on('status', function(data) {
+                        console.log('Status update:', data);
+                    });
+                } catch (error) {
+                    console.error('Error creating socket connection:', error);
+                    showToast('Failed to initialize connection: ' + error.message, 'error');
                     updateStatus('disconnected');
                     attemptReconnect();
-                });
-                
-                socket.on('message', function(data) {
-                    addMessage(data, 'vael');
-                });
-                
-                socket.on('status', function(data) {
-                    console.log('Status update:', data);
-                });
+                }
             }
             
             function updateStatus(status) {
@@ -214,35 +414,96 @@
                 if (status === 'connected') {
                     statusIndicator.classList.add('status-connected');
                     statusText.textContent = 'Connected';
+                    enableInput();
                 } else if (status === 'disconnected') {
                     statusIndicator.classList.add('status-disconnected');
                     statusText.textContent = 'Disconnected';
+                    disableInput('Disconnected from server');
                 } else if (status === 'connecting') {
                     statusIndicator.classList.add('status-connecting');
                     statusText.textContent = 'Connecting...';
+                    disableInput('Connecting to server...');
                 }
             }
             
             function attemptReconnect() {
                 if (reconnectAttempts < maxReconnectAttempts) {
                     reconnectAttempts++;
-                    setTimeout(() => {
-                        console.log(`Attempting to reconnect (${reconnectAttempts}/${maxReconnectAttempts})...`);
+                    
+                    // Calculate delay with exponential backoff and jitter
+                    const delay = Math.min(
+                        30000, // Max 30 seconds
+                        baseReconnectDelay * Math.pow(1.5, reconnectAttempts) * (0.9 + Math.random() * 0.2)
+                    );
+                    
+                    console.log(`Attempting to reconnect (${reconnectAttempts}/${maxReconnectAttempts}) in ${Math.round(delay / 1000)}s...`);
+                    
+                    reconnectTimeout = setTimeout(() => {
+                        showToast(`Reconnecting (attempt ${reconnectAttempts}/${maxReconnectAttempts})...`, 'warning', 2000);
                         connect();
-                    }, 2000 * reconnectAttempts);
+                    }, delay);
                 } else {
                     console.log('Max reconnect attempts reached');
-                    addMessage('Connection lost. Please refresh the page to reconnect.', 'vael');
+                    showToast('Failed to reconnect after multiple attempts. Please refresh the page.', 'error');
+                    addErrorMessage('Connection lost. Please refresh the page to reconnect.');
                 }
             }
             
             function addMessage(message, sender) {
+                try {
+                    const messageDiv = document.createElement('div');
+                    messageDiv.className = sender === 'user' ? 'user-message p-4 rounded mb-4' : 'vael-message p-4 rounded mb-4';
+                    
+                    const senderP = document.createElement('p');
+                    senderP.className = sender === 'user' ? 'text-purple-300 font-semibold mb-1' : 'text-blue-300 font-semibold mb-1';
+                    senderP.textContent = sender === 'user' ? 'You' : 'VAEL';
+                    
+                    const contentP = document.createElement('p');
+                    
+                    // Handle message formatting
+                    if (typeof message === 'string') {
+                        // Split message by newlines and create paragraph elements
+                        const lines = message.split('\n');
+                        contentP.textContent = lines[0]; // First line
+                        
+                        messageDiv.appendChild(senderP);
+                        messageDiv.appendChild(contentP);
+                        
+                        // Add additional paragraphs for remaining lines
+                        if (lines.length > 1) {
+                            for (let i = 1; i < lines.length; i++) {
+                                if (lines[i].trim() !== '') {
+                                    const additionalP = document.createElement('p');
+                                    additionalP.textContent = lines[i];
+                                    additionalP.className = 'mt-2';
+                                    messageDiv.appendChild(additionalP);
+                                }
+                            }
+                        }
+                    } else {
+                        // Fallback for non-string messages
+                        contentP.textContent = String(message);
+                        messageDiv.appendChild(senderP);
+                        messageDiv.appendChild(contentP);
+                    }
+                    
+                    messageContainer.appendChild(messageDiv);
+                    
+                    // Scroll to bottom
+                    messageContainer.scrollTop = messageContainer.scrollHeight;
+                } catch (error) {
+                    console.error('Error adding message:', error);
+                    addErrorMessage('Failed to display message');
+                }
+            }
+            
+            function addErrorMessage(message) {
                 const messageDiv = document.createElement('div');
-                messageDiv.className = sender === 'user' ? 'user-message p-4 rounded mb-4' : 'vael-message p-4 rounded mb-4';
+                messageDiv.className = 'error-message p-4 rounded mb-4';
                 
                 const senderP = document.createElement('p');
-                senderP.className = sender === 'user' ? 'text-purple-300 font-semibold mb-1' : 'text-blue-300 font-semibold mb-1';
-                senderP.textContent = sender === 'user' ? 'You' : 'VAEL';
+                senderP.className = 'text-red-300 font-semibold mb-1';
+                senderP.textContent = 'System';
                 
                 const contentP = document.createElement('p');
                 contentP.textContent = message;
@@ -255,12 +516,75 @@
                 messageContainer.scrollTop = messageContainer.scrollHeight;
             }
             
+            function showTypingIndicator() {
+                typingIndicator.classList.remove('hidden');
+            }
+            
+            function hideTypingIndicator() {
+                typingIndicator.classList.add('hidden');
+            }
+            
+            function disableInput(reason) {
+                messageInput.disabled = true;
+                sendButton.disabled = true;
+                messageInput.placeholder = reason || 'Input disabled';
+            }
+            
+            function enableInput() {
+                messageInput.disabled = false;
+                sendButton.disabled = false;
+                messageInput.placeholder = 'Enter your message...';
+            }
+            
             function sendMessage() {
                 const message = messageInput.value.trim();
-                if (message) {
+                if (!message) return;
+                
+                if (!socket || !socket.connected) {
+                    showToast('Not connected to server. Attempting to reconnect...', 'warning');
+                    connect();
+                    return;
+                }
+                
+                if (isWaitingForResponse) {
+                    showToast('Please wait for VAEL to respond', 'warning', 2000);
+                    return;
+                }
+                
+                try {
+                    // Add user message to UI
                     addMessage(message, 'user');
-                    socket.emit('message', message);
+                    
+                    // Show typing indicator
+                    showTypingIndicator();
+                    
+                    // Disable input while waiting
+                    isWaitingForResponse = true;
+                    disableInput('Waiting for response...');
+                    
+                    // Clear input field
                     messageInput.value = '';
+                    
+                    // Send message to server
+                    socket.emit('message', message);
+                    
+                    // Set timeout for response
+                    setTimeout(() => {
+                        if (isWaitingForResponse) {
+                            hideTypingIndicator();
+                            isWaitingForResponse = false;
+                            enableInput();
+                            addErrorMessage('Response timeout. VAEL took too long to respond.');
+                            showToast('Response timeout. Please try again.', 'error');
+                        }
+                    }, 30000); // 30 second timeout
+                } catch (error) {
+                    console.error('Error sending message:', error);
+                    hideTypingIndicator();
+                    isWaitingForResponse = false;
+                    enableInput();
+                    addErrorMessage('Failed to send message: ' + error.message);
+                    showToast('Failed to send message', 'error');
                 }
             }
             
@@ -279,6 +603,7 @@
                     waveform.classList.remove('hidden');
                     voiceButton.classList.add('bg-purple-700');
                     voiceButton.classList.remove('bg-gray-800');
+                    showToast('Voice mode is not yet implemented', 'warning');
                     // In a real implementation, this would activate the microphone
                     // and start speech recognition
                 } else {
@@ -294,10 +619,35 @@
             
             // Implement self-healing UI based on Agile Fix Kit principles
             document.addEventListener('visibilitychange', function() {
-                if (document.visibilityState === 'visible' && (!socket || !socket.connected)) {
-                    console.log('Page became visible, checking connection...');
+                if (document.visibilityState === 'visible') {
+                    if (!socket || !socket.connected) {
+                        console.log('Page became visible, checking connection...');
+                        connect();
+                    } else {
+                        // Send ping to verify connection is still alive
+                        try {
+                            socket.emit('message', 'ping');
+                        } catch (error) {
+                            console.error('Error sending ping:', error);
+                            connect();
+                        }
+                    }
+                }
+            });
+            
+            // Handle online/offline events
+            window.addEventListener('online', function() {
+                console.log('Browser went online');
+                if (!socket || !socket.connected) {
+                    showToast('Internet connection restored. Reconnecting...', 'success');
                     connect();
                 }
+            });
+            
+            window.addEventListener('offline', function() {
+                console.log('Browser went offline');
+                showToast('Internet connection lost. Waiting for connection...', 'warning');
+                updateStatus('disconnected');
             });
             
             window.addEventListener('resize', function() {
@@ -318,6 +668,13 @@
                 document.querySelector('header h1').classList.add('text-2xl');
                 document.querySelector('header h1').classList.remove('text-3xl');
             }
+            
+            // Handle page unload
+            window.addEventListener('beforeunload', function() {
+                if (socket && socket.connected) {
+                    socket.disconnect();
+                }
+            });
         });
     </script>
 </body>

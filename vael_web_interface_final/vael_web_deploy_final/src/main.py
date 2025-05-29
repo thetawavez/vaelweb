@@ -165,4 +165,4 @@ def health_check():
 
 if __name__ == '__main__':
     logger.info(f"Starting VAEL Web Interface on {FLASK_HOST}:{FLASK_PORT}")
-    socketio.run(app, host=FLASK_HOST, port=FLASK_PORT, debug=FLASK_DEBUG)
+    socketio.run(app, host=FLASK_HOST, port=FLASK_PORT, debug=FLASK_DEBUG, allow_unsafe_werkzeug=True)

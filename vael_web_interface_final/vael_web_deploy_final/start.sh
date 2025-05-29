@@ -61,6 +61,30 @@ if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" 
 fi
 success "Python version $PYTHON_VERSION meets requirements"
 
+# Check for Chrome installation
+section "Checking for Google Chrome"
+CHROME_FOUND=false
+CHROME_CMD=""
+
+if command -v google-chrome &> /dev/null; then
+  CHROME_CMD="google-chrome"
+  CHROME_FOUND=true
+  success "Google Chrome found: $(google-chrome --version)"
+elif command -v google-chrome-stable &> /dev/null; then
+  CHROME_CMD="google-chrome-stable"
+  CHROME_FOUND=true
+  success "Google Chrome found: $(google-chrome-stable --version)"
+elif command -v chrome &> /dev/null; then
+  CHROME_CMD="chrome"
+  CHROME_FOUND=true
+  success "Google Chrome found: $(chrome --version)"
+else
+  warning "Google Chrome not found. Voice features require Chrome for optimal performance."
+  log "Making install_chrome.sh executable..."
+  chmod +x ../install_chrome.sh
+  warning "You can install Chrome by running: ./install_chrome.sh"
+fi
+
 # Check for .env file
 section "Checking Environment Configuration"
 ENV_FILE=".env"
@@ -156,18 +180,23 @@ log "VAEL Web Interface is now available at:"
 echo -e "${CYAN}http://$IP:$PORT${NC}"
 echo -e "${CYAN}http://localhost:$PORT${NC}"
 
-# Try to open browser automatically
-if command -v xdg-open &> /dev/null; then
-  log "Opening browser..."
-  xdg-open http://localhost:$PORT &
-elif command -v open &> /dev/null; then
-  log "Opening browser..."
-  open http://localhost:$PORT &
-elif command -v start &> /dev/null; then
-  log "Opening browser..."
-  start http://localhost:$PORT &
+# Open in Chrome if available, otherwise try other browsers
+if [ "$CHROME_FOUND" = true ]; then
+  log "Opening VAEL Web Interface in Google Chrome (recommended for voice features)..."
+  $CHROME_CMD "http://localhost:$PORT" &
 else
-  log "Please open your browser and navigate to: http://localhost:$PORT"
+  log "Opening browser... Note: Voice features work best in Google Chrome."
+  # Try to open browser automatically
+  if command -v xdg-open &> /dev/null; then
+    xdg-open "http://localhost:$PORT" &
+  elif command -v open &> /dev/null; then
+    open "http://localhost:$PORT" &
+  elif command -v start &> /dev/null; then
+    start "http://localhost:$PORT" &
+  else
+    log "Please open your browser and navigate to: http://localhost:$PORT"
+    log "For best experience with voice features, please use Google Chrome."
+  fi
 fi
 
 log "The Iron Root stands vigilant. The Obsidian Thread remains unbroken."

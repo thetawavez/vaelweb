@@ -35,7 +35,7 @@ section() {
   echo -e "\n${PURPLE}========== $1 ==========${NC}"
 }
 
-# Check for Python
+# Check for Python and verify version
 section "Checking Python"
 if command -v python3 &> /dev/null; then
   PYTHON_CMD="python3"
@@ -46,6 +46,74 @@ elif command -v python &> /dev/null; then
 else
   error "Python not found. Please install Python 3.8 or higher."
   exit 1
+fi
+
+# Check Python version
+PYTHON_VERSION=$($PYTHON_CMD -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+PYTHON_MAJOR=$(echo $PYTHON_VERSION | cut -d. -f1)
+PYTHON_MINOR=$(echo $PYTHON_VERSION | cut -d. -f2)
+
+log "Detected Python version: $PYTHON_VERSION"
+
+if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 8 ]); then
+  error "Python 3.8 or higher is required. Found version $PYTHON_VERSION"
+  exit 1
+fi
+success "Python version $PYTHON_VERSION meets requirements"
+
+# Set up environment variables
+section "Setting Up Environment Variables"
+ENV_FILE="../.env"
+
+# Create .env file if it doesn't exist
+if [ ! -f "$ENV_FILE" ]; then
+  log "Creating .env file with default values..."
+  
+  # Generate a random secret key
+  SECRET_KEY=$(openssl rand -hex 24)
+  
+  cat > "$ENV_FILE" << EOL
+# Flask application configuration
+FLASK_SECRET_KEY=$SECRET_KEY
+FLASK_DEBUG=False
+FLASK_HOST=0.0.0.0
+FLASK_PORT=5000
+
+# OpenRouter API configuration
+OPENROUTER_API_KEY=
+OPENROUTER_API_URL=https://openrouter.ai/api/v1/chat/completions
+OPENROUTER_MODEL=openai/gpt-3.5-turbo
+
+# Environment information
+VAEL_MODE=web
+VAEL_CONTAINER=False
+VAEL_OPERATOR=user
+
+# Database configuration
+DATABASE_URI=sqlite:///vael.db
+EOL
+
+  success ".env file created"
+  
+  # Prompt for OpenRouter API key
+  log "Please enter your OpenRouter API key (leave blank to configure later):"
+  read -r API_KEY
+  
+  if [ ! -z "$API_KEY" ]; then
+    # Update the .env file with the provided API key
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+      # macOS
+      sed -i '' "s/OPENROUTER_API_KEY=/OPENROUTER_API_KEY=$API_KEY/" "$ENV_FILE"
+    else
+      # Linux/others
+      sed -i "s/OPENROUTER_API_KEY=/OPENROUTER_API_KEY=$API_KEY/" "$ENV_FILE"
+    fi
+    success "API key configured"
+  else
+    warning "No API key provided. You'll need to configure it in the .env file before using the application."
+  fi
+else
+  log ".env file already exists, using existing configuration"
 fi
 
 # Create virtual environment if it doesn't exist
@@ -91,6 +159,10 @@ if [ $? -ne 0 ]; then
 fi
 success "Dependencies installed"
 
+# Install python-dotenv if not already installed
+pip install python-dotenv
+success "python-dotenv installed"
+
 # Create logs directory
 section "Setting Up Directories"
 log "Creating logs directory..."
@@ -99,7 +171,7 @@ success "Logs directory created"
 
 # Start the application
 section "Starting VAEL Web Interface"
-log "Starting the application..."
+log "Starting the application with environment variables..."
 cd src
 $PYTHON_CMD -m main &
 APP_PID=$!
@@ -124,7 +196,7 @@ IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
 if [ -z "$IP" ]; then
   IP="localhost"
 fi
-PORT=5000
+PORT=$(grep "FLASK_PORT" ../.env | cut -d= -f2 || echo "5000")
 log "VAEL Web Interface is now available at:"
 echo -e "${CYAN}http://$IP:$PORT${NC}"
 echo -e "${CYAN}http://localhost:$PORT${NC}"

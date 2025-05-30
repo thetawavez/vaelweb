@@ -150,6 +150,18 @@ load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))' s
   fi
 fi
 
+# Ensure allow_unsafe_werkzeug=True is set in main.py
+if ! grep -q "allow_unsafe_werkzeug=True" src/main.py; then
+  log "Adding allow_unsafe_werkzeug=True to socketio.run in main.py..."
+  # This sed command finds the line with socketio.run(app, and appends the parameter before the closing parenthesis
+  sed -i '/socketio.run(app,/ { s/)$/, allow_unsafe_werkzeug=True)/ }' src/main.py
+  if [ $? -ne 0 ]; then
+    warning "Failed to add allow_unsafe_werkzeug=True to main.py. WebSocket issues may persist."
+  else
+    success "Added allow_unsafe_werkzeug=True to main.py"
+  fi
+fi
+
 # Check if .env file exists
 if [ ! -f ".env" ]; then
   warning ".env file not found. Creating from example..."

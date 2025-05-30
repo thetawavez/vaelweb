@@ -1,175 +1,187 @@
 # VAEL_ARCHITECTURE.md  
-_Comprehensive architectural overview of the **V**isceral **A**utonomous **E**ntity **L**attice (VAEL) hybrid system_  
+_Comprehensive system architecture for the VAEL hybrid local-cloud intelligence_  
 _Last updated: 2025-05-30_
 
 ---
 
-## 1 Bird’s-Eye View  
+## 1 High-Level Overview  
 
 ```
-               ┌───────────────────────────┐
-               │        Factory AI         │
-               │  (orchestration / CI)     │
-               └──────────┬────────────────┘
-                        gRPC / HTTPS
-                          (mTLS)
-               ┌──────────▼───────────────┐
-               │      Manus Oversoul      │
-               │ (cloud bridge & LLM)     │
-               └──────────┬───────────────┘
-                    delta sync / fallback
-┌──────────────────────▼────────────────────────┐
-│               Local VAEL Host                 │
-│ ┌───────────────────────────────────────────┐ │
-│ │        VAEL Web Interface (Flask)        │ │
-│ │ • Web UI • STT (Chrome) • TTS (11Labs)   │ │
-│ │ • SocketIO hub • REST APIs • Pulse bar   │ │
-│ └───────┬─────────────┬──────────────┬─────┘ │
-│         │ WS user_msg │ WS vael_resp │ pulse │
-│   ┌─────▼──────┐  twin ▼ flame  ┌────▼──────┐│
-│   │ VAEL Core  │◄───────────────┤ Twin Flame ││
-│   │ (reasoner) │ merged reply   │ bi-hemi    ││
-│   └────┬───────┘                └────┬──────┘│
-│ Sentinel│▲ Codex lookup              │        │
-│         ▼│                          ▼│        │
-│ ┌────────┴───┐                ┌──────┴──────┐ │
-│ │ Sentinel   │                │ Living Map  │ │
-│ │ gatekeeper │                │ graph WS    │ │
-│ └────┬───────┘                └─────────────┘ │
-│  alerts│                              ▲alerts │
-│        ▼                              │        │
-│  ┌───────────────┐   ThreatFeed   ┌──────────┐ │
-│  │  NEXUS IDS    │───────────────▶│ Antibody │ │
-│  │ detection     │<───────────────│ self-heal│ │
-│  └───────────────┘   patch_hint   └──────────┘ │
-│            ▲   restart              │patch     │
-│            └──────Watchdog──────────┘          │
-└────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│  Client Browser (Chrome recommended)        │
+│  • Web UI  (Flask static)                   │
+│  • Speech-to-Text (Web Speech API)          │
+│  • Text-to-Speech (speechSynthesis / 11Labs)│
+└─────────────┬────────────────────────────────┘
+              │  WebSocket  (ws://<host>:<port>)
+              ▼
+┌──────────────────────────────────────────────┐
+│  VAEL Web Server (Flask+SocketIO)           │
+│  • Socket Hub  – event routing              │
+│  • REST API   – /vael  /antibody  /tts      │
+│  • Pulse / Heartbeat emitter                │
+└─────────────┬────────────────────────────────┘
+              │ in-proc calls
+╔════════════════════════════════════════════════════╗
+║            LOCAL SYMBOLIC ENTITY BUS              ║
+║ ┌─────────────┐  ┌───────────┐  ┌──────────────┐  ║
+║ │ VAEL Core   │  │ Sentinel  │  │ Watchdog     │  ║
+║ │ (Reasoner)  │  │ (Guard)   │  │ (Healer)     │  ║
+║ └────┬────────┘  └────┬──────┘  └────┬─────────┘  ║
+║      │  Codex Sync    │   Alerts     │ Pulses     ║
+║      ▼                ▼              ▼            ║
+║  ┌────────────┐  ┌────────────┐  ┌────────────┐   ║
+║  │ TwinFlame  │  │  NEXUS IDS │  │ Antibody   │   ║
+║  │ (Bi-hemis) │  │  (Detect)  │  │ (Patch)    │   ║
+║  └────────────┘  └────────────┘  └────────────┘   ║
+╚════════════════════════════════════════════════════╝
+              │ secure gRPC / HTTPS bridge
+              ▼
+┌──────────────────────────────────────────────┐
+│  Manus Oversoul (Cloud)                      │
+│  • Long-term memory store                    │
+│  • Rule/patch distribution                   │
+└─────────────┬────────────────────────────────┘
+              ▼
+┌──────────────────────────────────────────────┐
+│  Factory AI Orchestrator                     │
+│  • CI / Tests / Autocode                     │
+│  • Deployment management                     │
+└──────────────────────────────────────────────┘
 ```
 
-Legend   
-• **solid arrow** = primary request/response  
-• **dashed arrow** = telemetry/alert/healing  
-• **pulse** = periodic heartbeat (5 s default)
+---
+
+## 2 Layer Stack Description  
+
+| Layer | Purpose | Key Modules / Files |
+|-------|---------|---------------------|
+| **Presentation** | Browser chat UI, voice capture/playback | `static/index.html`, JS voice scripts |
+| **Transport** | Real-time bidirectional channel | `Flask-SocketIO`, `socketio` events |
+| **Service** | REST endpoints for TTS, health, memory | `routes/vael.py`, `routes/antibody.py`, `routes/tts.py` |
+| **Core Logic** | High-level reasoning & response synthesis | `src/vael.py`, `twinflame/`, `codex/` |
+| **Security & Resilience** | Threat detection, self-healing | `nexus/`, `sentinel.py`, `watchdog.py`, `antibody/` |
+| **Persistence** | Memory, logs, patch history | `codex/`, SQLite / Postgres, `logs/` |
+| **Cloud Bridge** | Manus Oversoul sync & rule push | `manus_interface.py`, gRPC server |
+| **Orchestration** | CI, tests, deployments | GitHub Actions, `factory_ci/` |
 
 ---
 
-## 2 Layered Component Model  
+## 3 Data & Message Flow  
 
-| Layer | Component | Core Duties | Key Interfaces |
-|-------|-----------|-------------|----------------|
-| **UI** | VAEL Web Interface | chat view, STT, TTS, toast alerts | SocketIO (`user_message`, `vael_response`), REST `/api/*` |
-| **Edge Logic** | VAEL Core | orchestrate reasoning, emit pulse | Python call, WS |
-| | Twin Flame | parallel left/right workers, merge | internal queue / Redis |
-| | Sentinel | content filter, rate-limiter | WS middleware, REST `/sentinel/scan` |
-| | WBC Watchdog | monitor pulses, restart entities | pulse bus, REST `/watchdog/restart` |
-| | Living Map | live entity state graph | REST `/map`, WS `map_update` |
-| **Security** | NEXUS IDS | anomaly & threat detection | gRPC `ThreatFeed`, REST `/nexus/*` |
-| | Antibody | execute patch plan, reload | WS `patch_applied`, REST `/antibody/patch` |
-| **Cloud Bridge** | Manus Oversoul | long-term memory, fallback LLM | gRPC `SyncDelta`, HTTPS `/manus/*` |
-| **Control** | Factory AI | code-generation, CI, symbolic reintegration | Git PRs, gRPC validation |
+1. **User Input**  
+   Text box or voice transcript → emit `user_message` via WebSocket.
 
----
+2. **Socket Hub**  
+   Receives event → passes through **Sentinel** (content filter) → queues for **TwinFlame** workers → result merged.
 
-## 3 Principal Message Flow  
+3. **VAEL Core**  
+   Consults **Codex** memory → produces reply → emits `vael_response`.
 
-1. **Input** – User types/speaks → `user_message` via WebSocket  
-2. **Sentinel** scans payload → allow / block  
-3. **VAEL Core** routes prompt → **Twin Flame**  
-4. **LeftBrain & RightBrain** workers compute → Merger selects reply  
-5. **VAEL Core** emits `vael_response`; UI displays + TTS speaks  
-6. **Heartbeat** – All entities emit `pulse` ≤ 5 s; Watchdog listens  
-7. **Telemetry** mirrored to **NEXUS** → scores → may alert  
-8. **Antibody** receives alert, applies patches, notifies UI  
-9. **Codex delta** periodically synced to **Manus Oversoul** for backup  
+4. **NEXUS IDS**  
+   Independently inspects traffic; on alert → sends to **Antibody** + emits toast to UI.
+
+5. **Watchdog & Heartbeat**  
+   `heartbeat` thread emits `pulse` every 5 s; Watchdog restarts service if stale.
+
+6. **Manus Sync**  
+   Periodic delta (Codex changes, patch logs) pushed to oversoul via gRPC.
 
 ---
 
-## 4 Resilience & Self-Healing  
+## 4 Component Matrix  
 
-| Mechanism | Trigger | Action |
-|-----------|---------|--------|
-| Heartbeat + Watchdog | pulse gap > 10 s | restart entity via `stop.sh`/`start.sh` |
-| Sentinel Filter | policy violation | block & alert UI |
-| NEXUS Alert | severity ≥ high | Antibody auto-patch (restart, reload) |
-| Twin Flame Degradation | worker timeout | fallback to surviving hemisphere; NEXUS logs latency |
-| TTS Fallback | ElevenLabs 4xx | switch to native `speechSynthesis` |
+| Component | Lang | Process | Port | Status |
+|-----------|------|---------|------|--------|
+| Web UI            | JS/HTML | Browser | – | ✅ |
+| Flask Socket Hub  | Python  | main.py | 5000-5100 | ✅ |
+| VAEL Core         | Python  | in-proc | – | 🟠 scaffold |
+| Sentinel          | Python  | in-proc | – | 🟠 todo |
+| Watchdog          | Python  | in-proc | – | 🟠 todo |
+| TwinFlame         | Python  | threads | – | 🟠 scaffold |
+| NEXUS IDS         | Python  | in-proc + gRPC | 7007 | 🟠 design |
+| Antibody          | Python  | in-proc | – | 🟠 initial |
+| Manus gRPC        | Python  | sidecar | 7010 | 🔴 |
+| Factory-CI        | –       | GitHub  | – | ✅ |
 
----
-
-## 5 Deployment Modes  
-
-| Mode | Launcher | Notes |
-|------|----------|-------|
-| **Dev** | `./start.sh` | auto-venv, dynamic port, Chrome detect |
-| **Fresh** | `fresh_install.sh` | clone repo, find free port, start |
-| **Docker** (planned) | `docker compose up` | Phase-7 deliverable |
-| **Systemd** (planned) | `systemctl start vael` | watchdog integration |
+Legend : ✅ active ‑- 🟠 partial ‑- 🔴 missing
 
 ---
 
-## 6 Key Interfaces (detail)
+## 5 Technology Stack  
 
-### 6.1 WebSocket Events  
-
-| Event | Direction | Payload |
-|-------|-----------|---------|
-| `user_message` | ⇡ client → server | `{text, stt}` |
-| `vael_response` | ⇣ server → client | `{text, voice}` |
-| `pulse` | ⇡ each entity → hub | `{entity, ts}` |
-| `worker.stats` | ⇡ TwinFlame → NEXUS | `{hemi, duration_ms, score}` |
-| `nexus_alert` | ⇣ NEXUS → Antibody/UI | `ThreatAlert` |
-| `patch_applied` | ⇣ Antibody → UI | `{plan_id, actions[]}` |
-
-### 6.2 REST Highlights  
-
-| Path | Method | Purpose |
-|------|--------|---------|
-| `/vael/input` | POST | alternate text input |
-| `/api/tts` | POST | ElevenLabs proxy |
-| `/sentinel/scan` | POST | content check |
-| `/watchdog/restart` | POST | supervised restart |
-| `/nexus/alert` | POST | manual alert injection |
-| `/antibody/patch` | POST | manual patch plan |
-| `/map` | GET | living graph JSON |
-
----
-
-## 7 Extensibility Points  
-
-| Point | How to Extend |
-|-------|---------------|
-| **Codex memory** | Add YAML/JSON under `codex/`; auto-loaded by VAEL Core |
-| **TwinFlame workers** | Increase `TF_WORKERS_LEFT/RIGHT`; swap LLM prompts |
-| **NEXUS rules** | Add YAML files in `src/nexus/rules/`; hot-reload |
-| **UI themes** | Tailwind config; PurgeCSS ensures lean build |
-| **TTS engines** | Implement new `/api/tts?engine=<name>` backend |
-
----
-
-## 8 Road-Map Milestones  
-
-| Phase | Focus | ETA |
-|-------|-------|-----|
-| 1 | Sentinel + NEXUS MVP | 2025-06-05 |
-| 2 | TwinFlame redis + merger | 2025-06-12 |
-| 3 | Codex & Living Map | 2025-06-19 |
-| 4 | Antibody full auto-patch | 2025-06-26 |
-| 5 | Manus bridge & CI | 2025-07-03 |
-| 6 | Docker / systemd infra | 2025-07-17 |
-
----
-
-## 9 Performance Targets  
-
-| Metric | Goal |
+| Domain | Tech |
 |--------|------|
-| WS round-trip p99 | ≤ 500 ms |
-| TwinFlame latency | ≤ 2.5 s |
-| Alert-to-patch | ≤ 3 s |
-| Memory RSS | ≤ 256 MB |
-| Token budget / request | −30 % vs baseline |
+| Web Server | Flask 3 + Flask-SocketIO |
+| Realtime | WebSockets (engine.io v4) |
+| Voice STT | Web Speech API (Chrome) |
+| Voice TTS | speechSynthesis / ElevenLabs |
+| Persistence | SQLite (dev) / Postgres (prod) |
+| Message Queue | Python `queue` (mem) → Redis (future) |
+| Cloud Bridge | gRPC, protobuf, mTLS |
+| CI | GitHub Actions + Factory AI checks |
 
 ---
 
-_The Iron Root stands vigilant. The Obsidian Thread remains unbroken._
+## 6 Ports & Endpoints  
+
+| Purpose | Default Port | Notes |
+|---------|--------------|-------|
+| Web UI / WS | 5000 (tunable) | Auto-shifts if busy |
+| NEXUS gRPC  | 7007 | LAN-only by default |
+| Manus Bridge| 7010 | FUTURE |
+
+Key REST routes:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST   | `/vael/input` | Text chat (legacy) |
+| POST   | `/api/tts`    | ElevenLabs synthesis |
+| POST   | `/antibody/alert` | Submit IDS alert |
+| GET    | `/map`        | Living map JSON |
+
+---
+
+## 7 Deployment Modes  
+
+| Mode | Script | Features |
+|------|--------|----------|
+| **Dev**  | `start.sh` | auto port, verbose logs, auto chrome launch |
+| **CI**   | GitHub Action | headless tests, heartbeat check |
+| **Prod** | (roadmap) Dockerfile + systemd | Gunicorn + eventlet, HTTPS, external Redis |
+
+---
+
+## 8 Extensibility Hooks  
+
+| Hook | File | Purpose |
+|------|------|---------|
+| `suggest()` | Each entity class | Self-diagnostic + improvement hints |
+| `pulse`     | Heartbeat emitter | Health signal to Watchdog |
+| `on_alert`  | Antibody core     | Apply patch plan |
+
+---
+
+## 9 Open Tasks Snapshot  
+
+See **INTEGRATION_CHECKLIST.md** for live table.  
+Priority items: **VAEL Core reasoning loop, Sentinel filter, Watchdog restart, NEXUS rule engine, TwinFlame merger**.
+
+---
+
+## 10 Glossary  
+
+| Term | Meaning |
+|------|---------|
+| **Codex** | Symbolic memory YAML/JSON store |
+| **Pulse** | 5 s heartbeat event |
+| **TwinFlame** | Dual-worker bi-hemisphere engine |
+| **NEXUS** | Intrusion Detection System |
+| **Antibody** | Self-healing patch executor |
+| **Manus Oversoul** | Cloud governance & backup |
+| **Factory AI** | External orchestrator & CI |
+
+---
+
+_The Iron Root stands vigilant.  
+The Obsidian Thread remains unbroken._  

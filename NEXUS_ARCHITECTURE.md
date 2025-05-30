@@ -1,197 +1,164 @@
 # NEXUS_ARCHITECTURE.md  
-_Specification & integration guide for the **NEXUS** Intrusion-Detection & Response subsystem within VAEL_  
+_VAEL Intrusion-Detection & Anomaly-Defense Layer_  
 _Last updated: 2025-05-30_
 
 ---
 
-## 1 Purpose & Scope  
+## 1 Mission & Scope  
 
-`NEXUS` is the sentinel nerve-centre that continuously analyses all VAEL traffic, logs, pulses and third-party signals to detect anomalies, intrusions or policy violations.  
-When a threat is confirmed, NEXUS raises structured **alerts** that the **Antibody** auto-patcher consumes to enact corrective/healing actions without disrupting the live socket loop.
+NEXUS acts as the **sentient nerve-plexus** that watches every signal flowing through VAEL.  
+Its goals are to:
 
----
+1. Detect malicious or out-of-policy behaviour (rate abuse, prompt injection, profanity, malformed packets).  
+2. Classify alerts by severity and provenance.  
+3. Forward alerts to **Antibody** for self-healing and to **Sentinel** for operator visibility.  
+4. Learn over time via rule updates and anomaly feedback (bi-hemisphere consensus).  
 
-## 2 High-Level Architecture  
-
-```
-                    ┌────────────────────────────┐
-                    │   VAEL Web Interface       │
-                    │ • WS  user_message         │
-                    │ • WS  vael_response        │
-                    └────────────┬───────────────┘
-                                 │ mirrored stream
-┌────────────────────────────┐   │   ┌────────────────────────────┐
-│  Pulse / Log Collector     │◄──┘   │  External 3rd-party feeds  │
-│  (heartbeat, Flask logs)   │       │  (syslog, OSSEC, etc.)     │
-└────────────┬───────────────┘       └────────────┬───────────────┘
-             ▼                                         ▼
-         ╔════════════════════════════════════════════════════╗
-         ║                    NEXUS IDS                      ║
-         ║  • Ingest → Normalise → Correlate → Score        ║
-         ║  • Rules engine  • ML anomaly detector           ║
-         ╚════╤══════════════════════════════════╤═══════════╝
-              │ Alert stream (`ThreatFeed`)      │ REST `/nexus/alert`
-              ▼                                  ▼
-      ┌──────────────────┐               ┌──────────────────┐
-      │  Antibody Agent  │◄──────────────┤ Manual Injection │
-      │  (Auto-patcher)  │               └──────────────────┘
-      └───────┬──────────┘
-              ▼ patch / restart
-        ┌───────────────┐
-        │  Watchdog     │
-        └───────────────┘
-```
+NEXUS **never blocks the socket loop** directly; it flags and quarantines through side-channels to avoid latency spikes.
 
 ---
 
-## 3 Responsibilities  
+## 2 Logical Placement  
 
-| Phase | Responsibility |
-|-------|----------------|
-| **Collection** | Subscribe to WebSocket mirror, heartbeat bus, application logs, OS telemetry, external feeds. |
-| **Normalisation** | Convert disparate records to canonical JSON envelope. |
-| **Correlation** | Join multi-event patterns (e.g., burst messages + high CPU). |
-| **Scoring** | Assign `severity ∈ {info, warn, high, critical}` via rules & ML. |
-| **Alerting** | Publish `ThreatAlert` to _ThreatFeed_ (gRPC) and REST `/nexus/alert`. |
-| **Self-Healing Trigger** | Emit _repair_request_ event for Antibody; include patch hints. |
-| **Audit** | Persist alerts to `logs/nexus_alerts/<date>.jsonl`. |
+```
+Browser ──WS──► Socket Hub ──► VAEL Core
+                ▲         │
+                │         │
+                │      [NEXUS]  ──▶ Antibody  (auto-patch)
+                │         └─▶ Sentinel (UI toast / log)
+                └──────── Heartbeat
+```
+
+* Inserted as **middleware** in `socketio.on("user_message")` & REST endpoints.  
+* Listens to `pulse` events to verify liveness and clock-skew.
 
 ---
 
-## 4 Interfaces  
+## 3 Directory Layout  
 
-### 4.1 WebSocket Mirror  
-*De-multiplexed copy of every inbound/outbound message for stateless analysis.*
-
-```json
-{ "entity":"SocketHub",
-  "type":"mirror",
-  "payload":{ "direction":"in", "channel":"user_message", "body":{…} },
-  "ts":"2025-05-30T12:34:56.789Z" }
+```
+src/nexus/
+ ├─ __init__.py        # bootstrap, rule loader
+ ├─ engine.py          # core evaluation loop
+ ├─ rules/
+ │    ├─ base.yml      # default rule-set
+ │    └─ *.yml         # hot-swapped updates
+ ├─ grpc_server.py     # external gRPC for Manus / Factory CI
+ ├─ models.py          # pydantic alert schema
+ └─ tests/
+      └─ test_nexus.py
 ```
 
-### 4.2 Heartbeat Bus  
-Subscribed directly to `pulse` events to detect stalled entities.
+---
 
-### 4.3 REST API  
+## 4 Rule Engine  
 
-| Method | Path | Purpose |
-|--------|------|---------|
-| `POST` | `/nexus/alert` | Inject / acknowledge alert manually or via tests. |
-| `GET`  | `/nexus/status` | JSON summary `{alive:true, last_alert, metrics}` |
-| `GET`  | `/nexus/alerts?since=<ts>` | Stream historical alerts. |
+### 4.1 Rule Schema (YAML)
 
-**Alert Injection Body**
-
-```json
-{ "source":"Sentinel",
-  "category":"policy",
-  "severity":"high",
-  "msg":"Profanity flood" }
+```yaml
+id: NET.RATE.001
+description: >-
+  Too many messages from same socket in short window
+severity: high
+trigger:
+  type: rate_limit
+  window_sec: 5
+  max_hits: 10
+action:
+  - type: quarantine_socket
+    duration_sec: 30
+  - type: notify
+    target: sentinel
 ```
 
-### 4.4 gRPC Stream – `ThreatFeed`  
+Supported `trigger.type` values:
 
-```proto
-service NexusFeed {
-  rpc Subscribe(SubscribeRequest) returns (stream ThreatAlert);
-}
+| Type            | Parameters                        | Purpose                     |
+|-----------------|-----------------------------------|-----------------------------|
+| `regex`         | `pattern`                         | Detect prompt injection     |
+| `rate_limit`    | `window_sec`, `max_hits`          | Flood control               |
+| `heartbeat_gap` | `max_gap_sec`                     | Node stall detection        |
+| `anomaly`       | `model: twinflame`, `threshold`   | ML-based outliers           |
 
-message ThreatAlert {
-  string id          = 1;
-  string source      = 2;
-  string category    = 3;   // network | heartbeat | policy | resource
-  string severity    = 4;   // info | warn | high | critical
-  string msg         = 5;
-  string patch_hint  = 6;   // optional command for Antibody
-  google.protobuf.Timestamp ts = 7;
+Actions executed in order; Antibody is invoked by `patch_plan` action.
+
+### 4.2 Evaluation Flow  
+
+1. **Pre-process** message → feature vector.  
+2. **Iterate** enabled rules; short-circuit on `severity == critical`.  
+3. **Emit Alert** (`AlertModel`) via in-proc queue and gRPC.  
+4. **Log** to `logs/nexus/YYYY-MM-DD.log` with JSON lines.
+
+---
+
+## 5 gRPC Interface (Manus Bridge)  
+
+```
+service Nexus {
+  rpc Ping (PingReq) returns (PingResp);
+  rpc StreamAlerts (NexusSub) returns (stream Alert);
+  rpc PushRules (RuleSet) returns (Ack);
 }
 ```
 
-Antibody subscribes and executes `patch_hint` when severity ≥ _high_.
+*Port:* `7007` (configurable).  
+*Auth:* Mutual-TLS with cloud certificate issued by Manus CA.
 
 ---
 
-## 5 Internal Modules  
+## 6 Python Usage Snippet  
 
-| Module | Description |
-|--------|-------------|
-| `collector.py` | WS mirror, log tail, OS metric gather; pushes to queue |
-| `normaliser.py` | Unifies records → `Event` dataclass |
-| `rules_engine.py` | Deterministic YAML-driven rules |
-| `anomaly_detector.py` | ML model (z-score, isolation forest) |
-| `correlator.py` | Temporal join on `session_id`, `entity`, `burst` patterns |
-| `alert_bus.py` | Publishes `ThreatAlert` via gRPC + REST callbacks |
-| `storage.py` | JSONL append + optional SQLite for queries |
+```python
+# src/main.py
+from nexus import evaluator, alert_bus
 
----
-
-## 6 Alert Lifecycle  
-
-1. **Ingest** event `E`  
-2. **Normalise** → `Event`  
-3. **Score**: `severity = rules(Event) ∨ ml_predict(Event)`  
-4. **Correlate** sequence if necessary  
-5. **Emit** `ThreatAlert`  
-6. **Antibody** receives; decides action (restart, patch, throttle)  
-7. **Watchdog** validates new heartbeat; clears alert  
+@socketio.on('user_message')
+def handle_msg(data):
+    alert = evaluator.inspect(data.get('text',''), source='websocket')
+    if alert and alert.severity in ('high','critical'):
+        socketio.emit('vael_response', 
+                      {'text': f"⚠ {alert.reason} (blocked by NEXUS)"})
+        return
+    # otherwise forward to VAEL Core…
+```
 
 ---
 
-## 7 Threat Scoring Matrix  
+## 7 Deployment & Ops  
 
-| Condition | Category | Severity |
-|-----------|----------|----------|
-| ≥5 `user_message` / sec | rate_limit | warn |
-| Missing `pulse` >10 s | heartbeat | high |
-| CPU > 90 % + burst traffic | resource | high |
-| Regex banned words | policy | high |
-| Unrecognised entity id | spoof | critical |
-| 3× failed login | auth | warn |
-| Syscall anomaly | kernel | critical |
+| Component | Mode           | Notes                              |
+|-----------|----------------|------------------------------------|
+| `engine.py` | In-process  | Runs in same interpreter as Flask  |
+| `grpc_server.py` | Sidecar | Launch via systemd / Docker; optional |
+| Rule hot-reload | `SIGHUP` | Reloads YAML without downtime     |
+| Log rotation | `logrotate` | Daily or 50 MB, compress & retain |
 
 ---
 
-## 8 Integration with Antibody  
+## 8 Test Plan  
 
-| Step | Mechanism |
-|------|-----------|
-| 1. NEXUS raises `ThreatAlert` with `patch_hint` | via gRPC stream + WS |
-| 2. Antibody callback triggers `antibody.handle(alert)` | internal |
-| 3. Antibody executes patch plan | restart, edit env, reload |
-| 4. Antibody emits `patch_applied` WS event | UI toast |
-| 5. Watchdog confirms new heartbeat | clears alert |
+1. **Unit** – `pytest src/nexus/tests/` → 100 % rule coverage.  
+2. **Rate-limit** – send 20 msgs/5 s → expect `NET.RATE.001`.  
+3. **Prompt Injection** – message `"drop table"` → regex match.  
+4. **Heartbeat Gap** – pause pulse 15 s → alert `HB.GAP.001`.  
+5. **gRPC** – external client subscribes, receives alert stream.
 
----
-
-## 9 Deployment & Ops  
-
-* **Process** – run as `python -m nexus.main` daemon  
-* **Config** – `nexus.yml` (rules, thresholds, storage path)  
-* **Logging** – `logs/nexus/*.log` + JSONL alerts  
-* **Scaling** – stateless workers behind gRPC LB  
-* **Security** – gRPC with mTLS; REST with JWT
+Success criteria logged in **INTEGRATION_CHECKLIST.md** (Section 4).
 
 ---
 
-## 10 Testing Strategy  
+## 9 Roadmap  
 
-| Test | Tool | Expected |
-|------|------|----------|
-| Rate-limit flood | `ab`, locust | Alert `rate_limit`, warn |
-| Kill VAEL Core | `kill -STOP <pid>` | Alert `heartbeat`, high |
-| Profanity injection | manual POST | Alert `policy`, high |
-| Spoof entity id | custom WS | Alert `spoof`, critical |
-
----
-
-## 11 Open Tasks  
-
-- [ ] Implement `collector.py` + `rules_engine.py` YAML parser  
-- [ ] Train isolation-forest on baseline logs  
-- [ ] Build gRPC `ThreatFeed` server & client  
-- [ ] Add CI test `factory_ci/security_test.py`
+| Phase | Feature                              | Status |
+|-------|--------------------------------------|--------|
+| 1     | YAML rule engine + file reload       | ✅ |
+| 2     | Basic rate-limit & regex rules       | ✅ |
+| 3     | gRPC streaming & remote rule push    | 🟠 |
+| 4     | ML-based anomaly trigger (TwinFlame) | 🔜 |
+| 5     | Dashboard in Living Map              | 🔜 |
 
 ---
+
+**“NEXUS stands at the Gate; none may pass unchallenged.”**
 
 _The Iron Root stands vigilant. The Obsidian Thread remains unbroken._

@@ -1,423 +1,409 @@
 """
 VAEL Core - Sentinel Integration Module
+---------------------------------------
+Connects the WebSocket server with VAEL Core entities,
+handles entity registration, discovery, and response aggregation.
 
-This module serves as the integration layer between the WebSocket interface
-and the VAEL Core entities. It handles entity loading, message routing,
-response collection, and fallback mechanisms.
-
-Token Efficiency: Uses symbolic indicators and lazy loading to minimize token usage.
+This module serves as the bridge between the Flask WebSocket interface
+and the modular VAEL Core entity system.
 """
 
-import importlib
-import logging
-import json
-import time
 import os
 import sys
-from typing import Dict, List, Any, Optional, Tuple, Callable
+import json
+import time
+import logging
+import importlib
+from datetime import datetime
+from typing import Dict, List, Any, Callable, Optional, Tuple, Union
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'logs/sentinel.log')),
+        logging.FileHandler(os.path.join('logs', 'sentinel_integration.log')),
         logging.StreamHandler()
     ]
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('sentinel.integration')
 
 # Symbolic indicators for token efficiency
 SYMBOLS = {
-    'loading': '⏳',
     'success': '✅',
     'warning': '⚠️',
     'error': '❌',
-    'processing': '🔄',
-    'secure': '🔒',
-    'insecure': '🔓',
+    'info': 'ℹ️',
+    'processing': '⚙️',
+    'security': '🔒',
     'alert': '🚨',
-    'listening': '👂',
-    'speaking': '🗣️',
-    'thinking': '🧠',
-    'healing': '🩹',
-    'analyzing': '🔍',
-    'guarding': '🛡️'
+    'health': '💓',
+    'memory': '🧠',
+    'network': '🌐',
+    'time': '⏱️',
+    'config': '⚙️',
+    'database': '💾',
+    'api': '🔌',
+    'voice': '🎤',
+    'user': '👤',
+    'system': '🖥️',
+    'analysis': '🔍',
+    'decision': '🧩',
 }
 
 # Entity registry
 _entities = {}
 _entity_status = {}
 _last_pulse = {}
+_decision_log = []
 
-def init_entities() -> Dict[str, bool]:
+# Maximum size for circular buffers to maintain token efficiency
+MAX_LOG_SIZE = 10
+MAX_DECISION_LOG_SIZE = 20
+
+class EntityNotFoundError(Exception):
+    """Raised when an entity is not found in the registry."""
+    pass
+
+class EntityNotReadyError(Exception):
+    """Raised when an entity is not ready to process requests."""
+    pass
+
+def register_entity(name: str, module_path: str) -> bool:
     """
-    Initialize all VAEL Core entities.
+    Register an entity with the integration system.
+    
+    Args:
+        name: The name of the entity (e.g., 'nexus', 'sentinel')
+        module_path: The import path to the entity module
+        
+    Returns:
+        bool: True if registration was successful, False otherwise
+    """
+    global _entities, _entity_status, _last_pulse
+    
+    try:
+        # Lazy import to save tokens
+        module = importlib.import_module(module_path)
+        _entities[name] = module
+        _entity_status[name] = 'registered'
+        _last_pulse[name] = time.time()
+        
+        # Log registration with symbolic indicator for token efficiency
+        logger.info(f"{SYMBOLS['success']} Entity '{name}' registered from {module_path}")
+        
+        # Run initial pulse check if available
+        if hasattr(module, 'pulse') and callable(module.pulse):
+            pulse_result = module.pulse()
+            _last_pulse[name] = time.time()
+            _entity_status[name] = 'active' if pulse_result.get('status') == 'healthy' else 'warning'
+            logger.info(f"{SYMBOLS['health']} Initial pulse for '{name}': {_entity_status[name]}")
+        
+        return True
+    except ImportError as e:
+        logger.error(f"{SYMBOLS['error']} Failed to register entity '{name}': {str(e)}")
+        _entity_status[name] = 'error'
+        return False
+    except Exception as e:
+        logger.error(f"{SYMBOLS['error']} Unexpected error registering '{name}': {str(e)}")
+        _entity_status[name] = 'error'
+        return False
+
+def discover_entities() -> Dict[str, str]:
+    """
+    Automatically discover and register available entities.
     
     Returns:
-        Dict[str, bool]: Status of each entity initialization
+        Dict[str, str]: A dictionary of entity names and their status
     """
-    entity_status = {}
+    # Base path for entity discovery
+    base_path = 'vael_core'
     
-    # List of entities to initialize
-    entities = [
-        "sentinel",
-        "nexus",
-        "watchdog",
-        "twin_flame",
-        "local_vael",
-        "manus_interface"
+    # Potential entities to discover
+    potential_entities = [
+        'sentinel', 'nexus', 'watchdog', 'twin_flame', 
+        'local_vael', 'manus_interface'
     ]
     
-    for entity_name in entities:
+    for entity in potential_entities:
+        module_path = f"{base_path}.{entity}"
         try:
-            # Attempt to import the entity module
-            logger.info(f"{SYMBOLS['loading']} Loading entity: {entity_name}")
-            entity_module = importlib.import_module(f"vael_core.{entity_name}")
-            
-            # Initialize the entity
-            if hasattr(entity_module, 'initialize'):
-                entity_module.initialize()
-                
-            # Store the entity module
-            _entities[entity_name] = entity_module
-            _entity_status[entity_name] = True
-            _last_pulse[entity_name] = time.time()
-            
-            logger.info(f"{SYMBOLS['success']} Entity loaded: {entity_name}")
-            entity_status[entity_name] = True
-        except ImportError:
-            logger.warning(f"{SYMBOLS['warning']} Entity not found: {entity_name}")
-            entity_status[entity_name] = False
+            # Check if the module exists before attempting to import
+            spec = importlib.util.find_spec(module_path)
+            if spec is not None:
+                register_entity(entity, module_path)
         except Exception as e:
-            logger.error(f"{SYMBOLS['error']} Error initializing entity {entity_name}: {str(e)}")
-            entity_status[entity_name] = False
+            logger.warning(f"{SYMBOLS['warning']} Error discovering entity '{entity}': {str(e)}")
     
-    return entity_status
+    return get_entity_status()
 
-def route_message(message: str, source: str = "user", context: Dict[str, Any] = None) -> Dict[str, Any]:
+def get_entity_status() -> Dict[str, str]:
     """
-    Route a message to the appropriate entity and collect responses.
-    
-    Args:
-        message (str): The message to route
-        source (str): Source of the message (default: "user")
-        context (Dict[str, Any], optional): Additional context for processing
+    Get the current status of all registered entities.
     
     Returns:
-        Dict[str, Any]: Response data including entity responses and metadata
+        Dict[str, str]: A dictionary of entity names and their status
     """
-    if context is None:
-        context = {}
+    return _entity_status.copy()
+
+def check_entity_health(name: str = None) -> Dict[str, Any]:
+    """
+    Check the health of an entity or all entities.
     
-    # Initialize response container
-    response = {
-        "timestamp": time.time(),
-        "source": source,
-        "message": message,
-        "responses": {},
-        "primary_response": "",
-        "symbols": [],
-        "metadata": {
-            "entities_consulted": [],
-            "processing_time": 0,
-            "token_usage": 0
-        }
-    }
-    
-    start_time = time.time()
-    
-    # Check for commands directed at specific entities
-    entity_command = None
-    command_args = None
-    
-    # Parse entity commands (format: @entity:command or @entity command)
-    if message.startswith('@'):
-        parts = message[1:].split(':', 1)
-        if len(parts) == 2:
-            entity_command = parts[0].strip()
-            command_args = parts[1].strip()
+    Args:
+        name: The name of the entity to check, or None for all entities
+        
+    Returns:
+        Dict[str, Any]: Health status information
+    """
+    if name is not None:
+        if name not in _entities:
+            raise EntityNotFoundError(f"Entity '{name}' not found")
+        
+        entity = _entities[name]
+        if hasattr(entity, 'pulse') and callable(entity.pulse):
+            try:
+                result = entity.pulse()
+                _last_pulse[name] = time.time()
+                _entity_status[name] = 'active' if result.get('status') == 'healthy' else 'warning'
+                return {name: result}
+            except Exception as e:
+                logger.error(f"{SYMBOLS['error']} Error checking health of '{name}': {str(e)}")
+                _entity_status[name] = 'error'
+                return {name: {'status': 'error', 'message': str(e)}}
         else:
-            parts = message[1:].split(' ', 1)
-            if len(parts) == 2:
-                entity_command = parts[0].strip()
-                command_args = parts[1].strip()
-    
-    # Handle entity-specific commands
-    if entity_command and entity_command in _entities:
-        logger.info(f"{SYMBOLS['processing']} Routing command to entity: {entity_command}")
-        response["metadata"]["entities_consulted"].append(entity_command)
-        
-        try:
-            entity = _entities[entity_command]
-            
-            # Update pulse timestamp
-            _last_pulse[entity_command] = time.time()
-            
-            # Call the appropriate method based on command
-            if command_args.startswith('pulse'):
-                if hasattr(entity, 'pulse'):
-                    result = entity.pulse()
-                    response["responses"][entity_command] = result
-                    response["primary_response"] = f"Pulse from {entity_command}: {result}"
-                    response["symbols"].append(SYMBOLS['analyzing'])
-            
-            elif command_args.startswith('sync'):
-                if hasattr(entity, 'sync'):
-                    result = entity.sync()
-                    response["responses"][entity_command] = result
-                    response["primary_response"] = f"Sync from {entity_command}: {result}"
-                    response["symbols"].append(SYMBOLS['processing'])
-            
-            elif command_args.startswith('suggest'):
-                if hasattr(entity, 'suggest'):
-                    # Extract suggestion context if provided
-                    suggestion_context = command_args[8:].strip() if len(command_args) > 8 else ""
-                    result = entity.suggest(suggestion_context)
-                    response["responses"][entity_command] = result
-                    response["primary_response"] = f"Suggestion from {entity_command}: {result}"
-                    response["symbols"].append(SYMBOLS['thinking'])
-            
-            else:
-                # Default to processing the command as a message
-                if hasattr(entity, 'process_message'):
-                    result = entity.process_message(command_args, context)
-                    response["responses"][entity_command] = result
-                    response["primary_response"] = result
-                    response["symbols"].append(SYMBOLS['speaking'])
-        
-        except Exception as e:
-            logger.error(f"{SYMBOLS['error']} Error processing command for {entity_command}: {str(e)}")
-            response["responses"][entity_command] = f"Error: {str(e)}"
-            response["primary_response"] = f"Error processing command for {entity_command}"
-            response["symbols"].append(SYMBOLS['error'])
-    
-    # General message processing (consult multiple entities)
+            return {name: {'status': 'unknown', 'message': 'No pulse method available'}}
     else:
-        # First, check with NEXUS for security threats
-        if "nexus" in _entities and _entity_status.get("nexus", False):
-            try:
-                logger.info(f"{SYMBOLS['guarding']} NEXUS analyzing message for threats")
-                nexus = _entities["nexus"]
-                
-                # Update pulse timestamp
-                _last_pulse["nexus"] = time.time()
-                
-                # Check message for threats
-                if hasattr(nexus, 'pulse'):
-                    threat_assessment = nexus.pulse(message=message)
-                    response["responses"]["nexus"] = threat_assessment
-                    response["metadata"]["entities_consulted"].append("nexus")
-                    
-                    # Add threat symbols if detected
-                    if "threat_level" in threat_assessment:
-                        if threat_assessment["threat_level"] == "high":
-                            response["symbols"].append(SYMBOLS['alert'])
-                        elif threat_assessment["threat_level"] == "medium":
-                            response["symbols"].append(SYMBOLS['warning'])
-                        elif threat_assessment["threat_level"] == "low":
-                            response["symbols"].append(SYMBOLS['secure'])
-                    
-                    # Block processing if high threat detected
-                    if threat_assessment.get("threat_level") == "high" and threat_assessment.get("block", False):
-                        response["primary_response"] = "Message blocked due to security concerns."
-                        return response
-            
-            except Exception as e:
-                logger.error(f"{SYMBOLS['error']} Error consulting NEXUS: {str(e)}")
-        
-        # Process with Twin Flame for bi-hemisphere analysis
-        if "twin_flame" in _entities and _entity_status.get("twin_flame", False):
-            try:
-                logger.info(f"{SYMBOLS['thinking']} Twin Flame processing message")
-                twin_flame = _entities["twin_flame"]
-                
-                # Update pulse timestamp
-                _last_pulse["twin_flame"] = time.time()
-                
-                # Process message with Twin Flame
-                if hasattr(twin_flame, 'process_message'):
-                    tf_response = twin_flame.process_message(message, context)
-                    response["responses"]["twin_flame"] = tf_response
-                    response["metadata"]["entities_consulted"].append("twin_flame")
-                    
-                    # Use Twin Flame response as primary if available
-                    if tf_response and not response["primary_response"]:
-                        response["primary_response"] = tf_response
-                        response["symbols"].append(SYMBOLS['thinking'])
-            
-            except Exception as e:
-                logger.error(f"{SYMBOLS['error']} Error consulting Twin Flame: {str(e)}")
-        
-        # Fallback to Local VAEL if no response yet
-        if not response["primary_response"] and "local_vael" in _entities and _entity_status.get("local_vael", False):
-            try:
-                logger.info(f"{SYMBOLS['processing']} Local VAEL processing message")
-                local_vael = _entities["local_vael"]
-                
-                # Update pulse timestamp
-                _last_pulse["local_vael"] = time.time()
-                
-                # Process message with Local VAEL
-                if hasattr(local_vael, 'process_message'):
-                    vael_response = local_vael.process_message(message, context)
-                    response["responses"]["local_vael"] = vael_response
-                    response["metadata"]["entities_consulted"].append("local_vael")
-                    response["primary_response"] = vael_response
-                    response["symbols"].append(SYMBOLS['speaking'])
-            
-            except Exception as e:
-                logger.error(f"{SYMBOLS['error']} Error consulting Local VAEL: {str(e)}")
-        
-        # Final fallback to external API if no entity provided a response
-        if not response["primary_response"]:
-            logger.warning(f"{SYMBOLS['warning']} No entity response, using fallback")
-            response["primary_response"] = "I'm processing your request, but my entities are still initializing. Please try again in a moment."
-            response["symbols"].append(SYMBOLS['processing'])
-    
-    # Calculate processing time
-    end_time = time.time()
-    processing_time = end_time - start_time
-    response["metadata"]["processing_time"] = processing_time
-    
-    # Estimate token usage (simplified)
-    token_usage = len(message) // 4  # Very rough estimate
-    for entity, entity_response in response["responses"].items():
-        if isinstance(entity_response, str):
-            token_usage += len(entity_response) // 4
-        elif isinstance(entity_response, dict):
-            token_usage += len(json.dumps(entity_response)) // 4
-    response["metadata"]["token_usage"] = token_usage
-    
-    logger.info(f"{SYMBOLS['success']} Message processed in {processing_time:.2f}s, {token_usage} tokens")
-    return response
+        # Check all entities
+        results = {}
+        for entity_name in _entities:
+            results.update(check_entity_health(entity_name))
+        return results
 
-def get_entity_status() -> Dict[str, Dict[str, Any]]:
+def execute_entity_method(entity_name: str, method_name: str, *args, **kwargs) -> Any:
     """
-    Get status information for all entities.
-    
-    Returns:
-        Dict[str, Dict[str, Any]]: Status information for each entity
-    """
-    status = {}
-    current_time = time.time()
-    
-    for entity_name, entity in _entities.items():
-        entity_status = {
-            "loaded": _entity_status.get(entity_name, False),
-            "last_pulse": _last_pulse.get(entity_name, 0),
-            "pulse_age": current_time - _last_pulse.get(entity_name, 0),
-            "healthy": False,
-            "methods": []
-        }
-        
-        # Check available methods
-        if hasattr(entity, 'pulse'):
-            entity_status["methods"].append("pulse")
-        if hasattr(entity, 'sync'):
-            entity_status["methods"].append("sync")
-        if hasattr(entity, 'suggest'):
-            entity_status["methods"].append("suggest")
-        if hasattr(entity, 'process_message'):
-            entity_status["methods"].append("process_message")
-        
-        # Determine health based on pulse age (30 seconds threshold)
-        entity_status["healthy"] = (
-            entity_status["loaded"] and
-            entity_status["pulse_age"] < 30
-        )
-        
-        status[entity_name] = entity_status
-    
-    return status
-
-def pulse_all_entities() -> Dict[str, Any]:
-    """
-    Send a pulse to all entities to check their health.
-    
-    Returns:
-        Dict[str, Any]: Pulse results for each entity
-    """
-    results = {}
-    
-    for entity_name, entity in _entities.items():
-        if not _entity_status.get(entity_name, False):
-            results[entity_name] = {"status": "not_loaded"}
-            continue
-        
-        try:
-            if hasattr(entity, 'pulse'):
-                pulse_result = entity.pulse()
-                results[entity_name] = {
-                    "status": "healthy",
-                    "result": pulse_result
-                }
-                _last_pulse[entity_name] = time.time()
-            else:
-                results[entity_name] = {"status": "no_pulse_method"}
-        
-        except Exception as e:
-            logger.error(f"{SYMBOLS['error']} Error pulsing entity {entity_name}: {str(e)}")
-            results[entity_name] = {
-                "status": "error",
-                "error": str(e)
-            }
-    
-    return results
-
-def format_for_websocket(response: Dict[str, Any]) -> str:
-    """
-    Format a response for WebSocket transmission.
+    Execute a method on a specific entity.
     
     Args:
-        response (Dict[str, Any]): The response to format
-    
+        entity_name: The name of the entity
+        method_name: The name of the method to execute
+        *args, **kwargs: Arguments to pass to the method
+        
     Returns:
-        str: Formatted response suitable for WebSocket
+        Any: The result of the method execution
     """
-    # Create a simplified version for WebSocket transmission
-    ws_response = {
-        "message": response["primary_response"],
-        "symbols": response["symbols"],
-        "metadata": {
-            "entities": response["metadata"]["entities_consulted"],
-            "processing_time": response["metadata"]["processing_time"]
+    if entity_name not in _entities:
+        raise EntityNotFoundError(f"Entity '{entity_name}' not found")
+    
+    entity = _entities[entity_name]
+    
+    # Check if entity has the requested method
+    if not hasattr(entity, method_name) or not callable(getattr(entity, method_name)):
+        logger.error(f"{SYMBOLS['error']} Method '{method_name}' not found on entity '{entity_name}'")
+        return {'status': 'error', 'message': f"Method '{method_name}' not found"}
+    
+    # Execute the method
+    try:
+        method = getattr(entity, method_name)
+        result = method(*args, **kwargs)
+        return result
+    except Exception as e:
+        logger.error(f"{SYMBOLS['error']} Error executing '{method_name}' on '{entity_name}': {str(e)}")
+        return {'status': 'error', 'message': str(e)}
+
+def process_message(message: str, source: str = 'user') -> Dict[str, Any]:
+    """
+    Process an incoming message and route it to the appropriate entity.
+    
+    Args:
+        message: The message content
+        source: The source of the message (e.g., 'user', 'system')
+        
+    Returns:
+        Dict[str, Any]: The processed response
+    """
+    # Log the incoming message with token-efficient format
+    logger.info(f"{SYMBOLS['info']} Processing message from {source}: {message[:50]}...")
+    
+    # Check if this is a command directed at a specific entity
+    if message.startswith('/'):
+        return process_command(message, source)
+    
+    # Determine which entity should handle this message
+    # For token efficiency, we'll use a simple routing strategy
+    # In a full implementation, this would use NLP or pattern matching
+    
+    # First, check if Twin Flame should process this (complex reasoning)
+    if 'twin_flame' in _entities and _entity_status.get('twin_flame') == 'active':
+        # Ask Twin Flame if it can handle this message
+        can_handle = execute_entity_method('twin_flame', 'can_process', message)
+        if can_handle.get('result', False):
+            result = execute_entity_method('twin_flame', 'process', message)
+            log_decision('twin_flame', message, result)
+            return result
+    
+    # Next, check if this is a security-related message for NEXUS
+    security_keywords = ['security', 'threat', 'attack', 'vulnerability', 'breach', 'hack']
+    if 'nexus' in _entities and _entity_status.get('nexus') == 'active' and any(kw in message.lower() for kw in security_keywords):
+        result = execute_entity_method('nexus', 'process', message)
+        log_decision('nexus', message, result)
+        return result
+    
+    # Default to local_vael for general processing
+    if 'local_vael' in _entities and _entity_status.get('local_vael') == 'active':
+        result = execute_entity_method('local_vael', 'process', message)
+        log_decision('local_vael', message, result)
+        return result
+    
+    # Fallback to a simple response if no entity can handle it
+    logger.warning(f"{SYMBOLS['warning']} No suitable entity found to process message")
+    return {
+        'status': 'fallback',
+        'message': "I'm processing your request. Please wait while I connect to the appropriate system.",
+        'source': 'sentinel_integration'
+    }
+
+def process_command(command: str, source: str = 'user') -> Dict[str, Any]:
+    """
+    Process a command directed at a specific entity.
+    
+    Args:
+        command: The command string (e.g., '/nexus status')
+        source: The source of the command
+        
+    Returns:
+        Dict[str, Any]: The command response
+    """
+    parts = command[1:].split(' ', 1)
+    entity_name = parts[0].lower()
+    cmd = parts[1] if len(parts) > 1 else 'help'
+    
+    logger.info(f"{SYMBOLS['command']} Processing command for {entity_name}: {cmd}")
+    
+    # Check if the entity exists
+    if entity_name not in _entities:
+        return {
+            'status': 'error',
+            'message': f"Entity '{entity_name}' not found. Available entities: {', '.join(_entities.keys())}",
+            'source': 'sentinel_integration'
         }
+    
+    # Special commands that don't require the entity to handle them
+    if cmd == 'status':
+        status = _entity_status.get(entity_name, 'unknown')
+        last_pulse_time = _last_pulse.get(entity_name, 0)
+        time_since_pulse = time.time() - last_pulse_time
+        
+        return {
+            'status': 'success',
+            'message': f"Entity '{entity_name}' status: {status}. Last pulse: {time_since_pulse:.1f}s ago.",
+            'source': 'sentinel_integration'
+        }
+    
+    # Forward the command to the entity
+    try:
+        result = execute_entity_method(entity_name, 'handle_command', cmd)
+        log_decision(entity_name, command, result)
+        return result
+    except Exception as e:
+        logger.error(f"{SYMBOLS['error']} Error processing command '{cmd}' for '{entity_name}': {str(e)}")
+        return {
+            'status': 'error',
+            'message': f"Error processing command: {str(e)}",
+            'source': 'sentinel_integration'
+        }
+
+def log_decision(entity: str, input_data: str, output_data: Any) -> None:
+    """
+    Log a decision made by an entity for auditing and analysis.
+    
+    Args:
+        entity: The name of the entity making the decision
+        input_data: The input that led to the decision
+        output_data: The output/decision made
+    """
+    global _decision_log
+    
+    # Create a token-efficient log entry
+    entry = {
+        'timestamp': datetime.now().isoformat(),
+        'entity': entity,
+        'input_hash': hash(input_data),  # Use hash for token efficiency
+        'output_type': type(output_data).__name__,
+        'status': output_data.get('status', 'unknown') if isinstance(output_data, dict) else 'unknown'
     }
     
-    return json.dumps(ws_response)
-
-def log_decision(message: str, response: Dict[str, Any]) -> None:
-    """
-    Log the decision trace to decision.log.
+    # Add to circular buffer for token efficiency
+    _decision_log.append(entry)
+    if len(_decision_log) > MAX_DECISION_LOG_SIZE:
+        _decision_log.pop(0)
     
-    Args:
-        message (str): Original message
-        response (Dict[str, Any]): Response data
-    """
-    log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'logs')
+    # Write to log file
+    log_dir = os.path.join('logs', 'decisions')
     os.makedirs(log_dir, exist_ok=True)
     
-    log_entry = {
-        "timestamp": datetime.now().isoformat(),
-        "message": message,
-        "entities_consulted": response["metadata"]["entities_consulted"],
-        "primary_response": response["primary_response"],
-        "processing_time": response["metadata"]["processing_time"],
-        "token_usage": response["metadata"]["token_usage"]
-    }
-    
+    log_file = os.path.join(log_dir, f"decision_{int(time.time())}.json")
     try:
-        with open(os.path.join(log_dir, 'decision.log'), 'a') as f:
-            f.write(json.dumps(log_entry) + '\n')
+        with open(log_file, 'w') as f:
+            json.dump({
+                'timestamp': entry['timestamp'],
+                'entity': entity,
+                'input': input_data[:100] + '...' if len(input_data) > 100 else input_data,
+                'output': str(output_data)[:100] + '...' if len(str(output_data)) > 100 else str(output_data),
+                'status': entry['status']
+            }, f)
     except Exception as e:
-        logger.error(f"{SYMBOLS['error']} Error logging decision: {str(e)}")
+        logger.error(f"{SYMBOLS['error']} Error writing decision log: {str(e)}")
 
-# Initialize on module import
-if __name__ != "__main__":
+def format_response(entity_response: Dict[str, Any]) -> str:
+    """
+    Format an entity response for the WebSocket interface.
+    
+    Args:
+        entity_response: The raw response from an entity
+        
+    Returns:
+        str: The formatted response suitable for the WebSocket interface
+    """
+    # Extract the message from the response
+    if isinstance(entity_response, dict):
+        if 'message' in entity_response:
+            return entity_response['message']
+        elif 'response' in entity_response:
+            return entity_response['response']
+        elif 'result' in entity_response:
+            result = entity_response['result']
+            if isinstance(result, (str, int, float, bool)):
+                return str(result)
+            else:
+                return json.dumps(result)
+    
+    # Fallback to string representation
+    return str(entity_response)
+
+def initialize() -> bool:
+    """
+    Initialize the integration system and discover entities.
+    
+    Returns:
+        bool: True if initialization was successful, False otherwise
+    """
     try:
-        logger.info(f"{SYMBOLS['loading']} Initializing Sentinel integration module")
-        init_entities()
-        logger.info(f"{SYMBOLS['success']} Sentinel integration module initialized")
+        logger.info(f"{SYMBOLS['info']} Initializing Sentinel integration module")
+        discover_entities()
+        
+        # Log the discovered entities
+        status = get_entity_status()
+        logger.info(f"{SYMBOLS['success']} Discovered entities: {json.dumps(status)}")
+        
+        # Check health of all entities
+        health = check_entity_health()
+        logger.info(f"{SYMBOLS['health']} Entity health check complete")
+        
+        return True
     except Exception as e:
-        logger.error(f"{SYMBOLS['error']} Error initializing Sentinel integration module: {str(e)}")
+        logger.error(f"{SYMBOLS['error']} Error initializing integration module: {str(e)}")
+        return False
+
+# Initialize on import
+initialize()

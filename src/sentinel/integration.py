@@ -1,401 +1,423 @@
 """
 VAEL Core - Sentinel Integration Module
-=======================================
 
-This module provides utilities for integrating the Sentinel security
-system with other VAEL components such as the WebSocket server,
-NEXUS IDS, and Antibody self-healing system.
+This module serves as the integration layer between the WebSocket interface
+and the VAEL Core entities. It handles entity loading, message routing,
+response collection, and fallback mechanisms.
 
-Usage:
-    from sentinel.integration import (
-        register_with_socketio, register_with_nexus,
-        register_with_antibody, broadcast_security_alert
-    )
+Token Efficiency: Uses symbolic indicators and lazy loading to minimize token usage.
 """
 
+import importlib
 import logging
 import json
 import time
-import threading
-from typing import Dict, List, Tuple, Optional, Any, Callable
-from datetime import datetime
+import os
+import sys
+from typing import Dict, List, Any, Optional, Tuple, Callable
 
-# Configure logger
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'logs/sentinel.log')),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
-# Type aliases for clarity
-AlertHandler = Callable[[Dict[str, Any]], None]
-MessageFilter = Callable[[str], Tuple[bool, str]]
-SecurityEvent = Dict[str, Any]
+# Symbolic indicators for token efficiency
+SYMBOLS = {
+    'loading': '⏳',
+    'success': '✅',
+    'warning': '⚠️',
+    'error': '❌',
+    'processing': '🔄',
+    'secure': '🔒',
+    'insecure': '🔓',
+    'alert': '🚨',
+    'listening': '👂',
+    'speaking': '🗣️',
+    'thinking': '🧠',
+    'healing': '🩹',
+    'analyzing': '🔍',
+    'guarding': '🛡️'
+}
 
-# Global registry of alert handlers
-_alert_handlers: List[AlertHandler] = []
+# Entity registry
+_entities = {}
+_entity_status = {}
+_last_pulse = {}
 
-# Global registry of message filters
-_message_filters: List[MessageFilter] = []
-
-# Last security event
-_last_security_event: Optional[SecurityEvent] = None
-
-# Sentinel instance reference (set by register_sentinel)
-_sentinel_instance = None
-
-def register_sentinel(sentinel_instance) -> None:
+def init_entities() -> Dict[str, bool]:
     """
-    Register the Sentinel instance for integration functions.
+    Initialize all VAEL Core entities.
     
-    Args:
-        sentinel_instance: The Sentinel instance to register
+    Returns:
+        Dict[str, bool]: Status of each entity initialization
     """
-    global _sentinel_instance
-    _sentinel_instance = sentinel_instance
-    logger.info("Sentinel instance registered for integration")
-
-def register_with_socketio(socketio) -> None:
-    """
-    Register Sentinel with Flask-SocketIO for WebSocket monitoring.
+    entity_status = {}
     
-    This function integrates Sentinel with the WebSocket server by:
-    1. Adding event handlers for incoming messages
-    2. Setting up a heartbeat emitter
-    3. Registering security event broadcasts
+    # List of entities to initialize
+    entities = [
+        "sentinel",
+        "nexus",
+        "watchdog",
+        "twin_flame",
+        "local_vael",
+        "manus_interface"
+    ]
     
-    Args:
-        socketio: The Flask-SocketIO instance
-    """
-    if _sentinel_instance is None:
-        logger.error("Cannot register with SocketIO: No Sentinel instance registered")
-        return
-    
-    logger.info("Registering Sentinel with SocketIO")
-    
-    # Create a message interceptor for 'message' events
-    @socketio.on('message')
-    def _intercept_message(data):
-        # Skip if it's a system message
-        if isinstance(data, str) and data.lower() == "ping":
-            return
-        
-        # Extract the message content
-        message = data
-        if isinstance(data, dict) and 'text' in data:
-            message = data['text']
-        elif isinstance(data, dict) and 'message' in data:
-            message = data['message']
-        
-        # Apply all registered message filters
-        for filter_func in _message_filters:
-            is_safe, reason = filter_func(message)
-            if not is_safe:
-                # Block the message and notify the client
-                socketio.emit('security_alert', {
-                    'level': 'warning',
-                    'message': f"Message blocked: {reason}",
-                    'timestamp': datetime.now().isoformat()
-                })
-                return False  # Prevent further processing
-    
-    # Register a pulse emitter
-    def _emit_sentinel_pulse():
-        while True:
-            try:
-                pulse_data = _sentinel_instance.pulse()
-                socketio.emit('pulse', pulse_data)
-                time.sleep(5)  # Emit pulse every 5 seconds
-            except Exception as e:
-                logger.error(f"Error in Sentinel pulse emitter: {e}")
-                time.sleep(10)  # Longer interval on error
-    
-    # Start the pulse emitter in a background thread
-    pulse_thread = threading.Thread(
-        target=_emit_sentinel_pulse,
-        daemon=True,
-        name="sentinel-pulse"
-    )
-    pulse_thread.start()
-    
-    # Register a function to broadcast security alerts
-    def _broadcast_alert(alert_data):
-        socketio.emit('security_alert', alert_data)
-    
-    register_alert_handler(_broadcast_alert)
-    
-    logger.info("Sentinel successfully registered with SocketIO")
-
-def register_with_nexus(nexus_instance) -> None:
-    """
-    Register Sentinel with NEXUS for advanced threat detection.
-    
-    This function integrates Sentinel with the NEXUS IDS by:
-    1. Sharing security rules and patterns
-    2. Setting up a communication channel for alerts
-    3. Registering Sentinel as a security provider
-    
-    Args:
-        nexus_instance: The NEXUS instance
-    """
-    if _sentinel_instance is None:
-        logger.error("Cannot register with NEXUS: No Sentinel instance registered")
-        return
-    
-    logger.info("Registering Sentinel with NEXUS IDS")
-    
-    try:
-        # Register Sentinel as a security provider
-        nexus_instance.register_security_provider("sentinel", {
-            "name": "Sentinel",
-            "version": getattr(_sentinel_instance, "__version__", "0.1.0"),
-            "capabilities": ["message_scanning", "threat_detection", "pulse_monitoring"]
-        })
-        
-        # Share Sentinel rules with NEXUS
-        if hasattr(_sentinel_instance, "threat_patterns"):
-            patterns = [
-                pattern.pattern if hasattr(pattern, "pattern") else str(pattern)
-                for pattern in _sentinel_instance.threat_patterns
-            ]
-            nexus_instance.update_patterns("sentinel", patterns)
-        
-        if hasattr(_sentinel_instance, "blocked_terms"):
-            nexus_instance.update_blocked_terms("sentinel", list(_sentinel_instance.blocked_terms))
-        
-        # Register NEXUS alert handler
-        def _handle_nexus_alert(alert_data):
-            if alert_data.get("source") != "sentinel":  # Avoid loops
-                broadcast_security_alert({
-                    "level": alert_data.get("severity", "warning"),
-                    "message": alert_data.get("message", "NEXUS security alert"),
-                    "source": "nexus",
-                    "timestamp": datetime.now().isoformat(),
-                    "details": alert_data
-                })
-        
-        nexus_instance.register_alert_handler(_handle_nexus_alert)
-        
-        # Register Sentinel as a message filter in NEXUS
-        def _sentinel_filter(message):
-            return _sentinel_instance.scan(message)
-        
-        nexus_instance.register_message_filter("sentinel", _sentinel_filter)
-        
-        logger.info("Sentinel successfully registered with NEXUS IDS")
-    
-    except Exception as e:
-        logger.error(f"Error registering Sentinel with NEXUS: {e}")
-
-def register_with_antibody(antibody_instance) -> None:
-    """
-    Register Sentinel with Antibody for self-healing capabilities.
-    
-    This function integrates Sentinel with the Antibody system by:
-    1. Providing security event hooks
-    2. Registering for healing notifications
-    3. Setting up a communication channel for remediation
-    
-    Args:
-        antibody_instance: The Antibody instance
-    """
-    if _sentinel_instance is None:
-        logger.error("Cannot register with Antibody: No Sentinel instance registered")
-        return
-    
-    logger.info("Registering Sentinel with Antibody self-healing system")
-    
-    try:
-        # Register Sentinel as a security event source
-        antibody_instance.register_event_source("sentinel", {
-            "name": "Sentinel",
-            "version": getattr(_sentinel_instance, "__version__", "0.1.0"),
-            "event_types": ["message_blocked", "threat_detected", "anomaly_detected"]
-        })
-        
-        # Register event handler for Antibody remediation notifications
-        def _handle_remediation(remediation_data):
-            logger.info(f"Antibody remediation applied: {remediation_data.get('action')}")
-            
-            # Update Sentinel rules if provided
-            if 'new_patterns' in remediation_data:
-                try:
-                    for pattern in remediation_data['new_patterns']:
-                        _sentinel_instance.threat_patterns.append(pattern)
-                    logger.info(f"Added {len(remediation_data['new_patterns'])} new patterns from Antibody")
-                except Exception as e:
-                    logger.error(f"Error updating patterns from Antibody: {e}")
-            
-            # Update blocked terms if provided
-            if 'new_blocked_terms' in remediation_data:
-                try:
-                    _sentinel_instance.blocked_terms.update(remediation_data['new_blocked_terms'])
-                    logger.info(f"Added {len(remediation_data['new_blocked_terms'])} new blocked terms from Antibody")
-                except Exception as e:
-                    logger.error(f"Error updating blocked terms from Antibody: {e}")
-        
-        antibody_instance.register_remediation_handler("sentinel", _handle_remediation)
-        
-        # Register a security event handler that forwards to Antibody
-        def _forward_to_antibody(event_data):
-            antibody_instance.process_security_event({
-                "source": "sentinel",
-                "type": event_data.get("type", "security_alert"),
-                "severity": event_data.get("level", "warning"),
-                "message": event_data.get("message", ""),
-                "timestamp": event_data.get("timestamp", datetime.now().isoformat()),
-                "details": event_data
-            })
-        
-        register_alert_handler(_forward_to_antibody)
-        
-        logger.info("Sentinel successfully registered with Antibody")
-    
-    except Exception as e:
-        logger.error(f"Error registering Sentinel with Antibody: {e}")
-
-def register_message_filter(filter_func: MessageFilter) -> None:
-    """
-    Register a message filter function.
-    
-    Args:
-        filter_func: Function that takes a message string and returns (is_safe, reason)
-    """
-    _message_filters.append(filter_func)
-    logger.debug(f"Message filter registered (total: {len(_message_filters)})")
-
-def register_alert_handler(handler_func: AlertHandler) -> None:
-    """
-    Register a security alert handler function.
-    
-    Args:
-        handler_func: Function that takes an alert data dictionary
-    """
-    _alert_handlers.append(handler_func)
-    logger.debug(f"Alert handler registered (total: {len(_alert_handlers)})")
-
-def broadcast_security_alert(alert_data: Dict[str, Any]) -> None:
-    """
-    Broadcast a security alert to all registered handlers.
-    
-    Args:
-        alert_data: Dictionary with alert information
-    """
-    global _last_security_event
-    
-    # Add timestamp if not present
-    if 'timestamp' not in alert_data:
-        alert_data['timestamp'] = datetime.now().isoformat()
-    
-    # Store as last security event
-    _last_security_event = alert_data
-    
-    # Log the alert
-    level = alert_data.get('level', 'warning').lower()
-    message = alert_data.get('message', 'Security alert')
-    
-    if level == 'critical':
-        logger.critical(f"SECURITY ALERT: {message}")
-    elif level == 'high':
-        logger.error(f"SECURITY ALERT: {message}")
-    elif level == 'warning':
-        logger.warning(f"SECURITY ALERT: {message}")
-    else:
-        logger.info(f"SECURITY ALERT: {message}")
-    
-    # Notify all handlers
-    for handler in _alert_handlers:
+    for entity_name in entities:
         try:
-            handler(alert_data)
+            # Attempt to import the entity module
+            logger.info(f"{SYMBOLS['loading']} Loading entity: {entity_name}")
+            entity_module = importlib.import_module(f"vael_core.{entity_name}")
+            
+            # Initialize the entity
+            if hasattr(entity_module, 'initialize'):
+                entity_module.initialize()
+                
+            # Store the entity module
+            _entities[entity_name] = entity_module
+            _entity_status[entity_name] = True
+            _last_pulse[entity_name] = time.time()
+            
+            logger.info(f"{SYMBOLS['success']} Entity loaded: {entity_name}")
+            entity_status[entity_name] = True
+        except ImportError:
+            logger.warning(f"{SYMBOLS['warning']} Entity not found: {entity_name}")
+            entity_status[entity_name] = False
         except Exception as e:
-            logger.error(f"Error in security alert handler: {e}")
-
-def get_last_security_event() -> Optional[SecurityEvent]:
-    """
-    Get the last security event.
+            logger.error(f"{SYMBOLS['error']} Error initializing entity {entity_name}: {str(e)}")
+            entity_status[entity_name] = False
     
-    Returns:
-        The last security event or None if no events have occurred
-    """
-    return _last_security_event
+    return entity_status
 
-def create_sentinel_message_filter(sentinel_instance) -> MessageFilter:
+def route_message(message: str, source: str = "user", context: Dict[str, Any] = None) -> Dict[str, Any]:
     """
-    Create a message filter function using a Sentinel instance.
+    Route a message to the appropriate entity and collect responses.
     
     Args:
-        sentinel_instance: The Sentinel instance to use for filtering
+        message (str): The message to route
+        source (str): Source of the message (default: "user")
+        context (Dict[str, Any], optional): Additional context for processing
+    
+    Returns:
+        Dict[str, Any]: Response data including entity responses and metadata
+    """
+    if context is None:
+        context = {}
+    
+    # Initialize response container
+    response = {
+        "timestamp": time.time(),
+        "source": source,
+        "message": message,
+        "responses": {},
+        "primary_response": "",
+        "symbols": [],
+        "metadata": {
+            "entities_consulted": [],
+            "processing_time": 0,
+            "token_usage": 0
+        }
+    }
+    
+    start_time = time.time()
+    
+    # Check for commands directed at specific entities
+    entity_command = None
+    command_args = None
+    
+    # Parse entity commands (format: @entity:command or @entity command)
+    if message.startswith('@'):
+        parts = message[1:].split(':', 1)
+        if len(parts) == 2:
+            entity_command = parts[0].strip()
+            command_args = parts[1].strip()
+        else:
+            parts = message[1:].split(' ', 1)
+            if len(parts) == 2:
+                entity_command = parts[0].strip()
+                command_args = parts[1].strip()
+    
+    # Handle entity-specific commands
+    if entity_command and entity_command in _entities:
+        logger.info(f"{SYMBOLS['processing']} Routing command to entity: {entity_command}")
+        response["metadata"]["entities_consulted"].append(entity_command)
         
-    Returns:
-        A message filter function
-    """
-    def _filter(message: str) -> Tuple[bool, str]:
-        return sentinel_instance.scan(message)
+        try:
+            entity = _entities[entity_command]
+            
+            # Update pulse timestamp
+            _last_pulse[entity_command] = time.time()
+            
+            # Call the appropriate method based on command
+            if command_args.startswith('pulse'):
+                if hasattr(entity, 'pulse'):
+                    result = entity.pulse()
+                    response["responses"][entity_command] = result
+                    response["primary_response"] = f"Pulse from {entity_command}: {result}"
+                    response["symbols"].append(SYMBOLS['analyzing'])
+            
+            elif command_args.startswith('sync'):
+                if hasattr(entity, 'sync'):
+                    result = entity.sync()
+                    response["responses"][entity_command] = result
+                    response["primary_response"] = f"Sync from {entity_command}: {result}"
+                    response["symbols"].append(SYMBOLS['processing'])
+            
+            elif command_args.startswith('suggest'):
+                if hasattr(entity, 'suggest'):
+                    # Extract suggestion context if provided
+                    suggestion_context = command_args[8:].strip() if len(command_args) > 8 else ""
+                    result = entity.suggest(suggestion_context)
+                    response["responses"][entity_command] = result
+                    response["primary_response"] = f"Suggestion from {entity_command}: {result}"
+                    response["symbols"].append(SYMBOLS['thinking'])
+            
+            else:
+                # Default to processing the command as a message
+                if hasattr(entity, 'process_message'):
+                    result = entity.process_message(command_args, context)
+                    response["responses"][entity_command] = result
+                    response["primary_response"] = result
+                    response["symbols"].append(SYMBOLS['speaking'])
+        
+        except Exception as e:
+            logger.error(f"{SYMBOLS['error']} Error processing command for {entity_command}: {str(e)}")
+            response["responses"][entity_command] = f"Error: {str(e)}"
+            response["primary_response"] = f"Error processing command for {entity_command}"
+            response["symbols"].append(SYMBOLS['error'])
     
-    return _filter
-
-def setup_entity_communication(entity_name: str, entity_instance: Any) -> None:
-    """
-    Set up communication between Sentinel and another entity.
-    
-    This is a generic function for establishing bidirectional
-    communication with other VAEL entities.
-    
-    Args:
-        entity_name: Name of the entity
-        entity_instance: The entity instance
-    """
-    if _sentinel_instance is None:
-        logger.error(f"Cannot setup communication with {entity_name}: No Sentinel instance registered")
-        return
-    
-    logger.info(f"Setting up communication with {entity_name}")
-    
-    # Register entity's suggest method if available
-    if hasattr(entity_instance, 'suggest'):
-        def _handle_suggestions():
+    # General message processing (consult multiple entities)
+    else:
+        # First, check with NEXUS for security threats
+        if "nexus" in _entities and _entity_status.get("nexus", False):
             try:
-                suggestions = entity_instance.suggest()
-                if suggestions:
-                    logger.info(f"Received {len(suggestions)} suggestions from {entity_name}")
-                    for suggestion in suggestions:
-                        if suggestion.get('severity', '').lower() == 'critical':
-                            broadcast_security_alert({
-                                'level': 'critical',
-                                'message': suggestion.get('message', f"Critical suggestion from {entity_name}"),
-                                'source': entity_name,
-                                'action': suggestion.get('action', '')
-                            })
+                logger.info(f"{SYMBOLS['guarding']} NEXUS analyzing message for threats")
+                nexus = _entities["nexus"]
+                
+                # Update pulse timestamp
+                _last_pulse["nexus"] = time.time()
+                
+                # Check message for threats
+                if hasattr(nexus, 'pulse'):
+                    threat_assessment = nexus.pulse(message=message)
+                    response["responses"]["nexus"] = threat_assessment
+                    response["metadata"]["entities_consulted"].append("nexus")
+                    
+                    # Add threat symbols if detected
+                    if "threat_level" in threat_assessment:
+                        if threat_assessment["threat_level"] == "high":
+                            response["symbols"].append(SYMBOLS['alert'])
+                        elif threat_assessment["threat_level"] == "medium":
+                            response["symbols"].append(SYMBOLS['warning'])
+                        elif threat_assessment["threat_level"] == "low":
+                            response["symbols"].append(SYMBOLS['secure'])
+                    
+                    # Block processing if high threat detected
+                    if threat_assessment.get("threat_level") == "high" and threat_assessment.get("block", False):
+                        response["primary_response"] = "Message blocked due to security concerns."
+                        return response
+            
             except Exception as e:
-                logger.error(f"Error processing suggestions from {entity_name}: {e}")
+                logger.error(f"{SYMBOLS['error']} Error consulting NEXUS: {str(e)}")
         
-        # Schedule periodic suggestion checks
-        suggestion_thread = threading.Thread(
-            target=lambda: (
-                _handle_suggestions(),
-                time.sleep(60),  # Check suggestions every minute
-                suggestion_thread.run()
-            ),
-            daemon=True,
-            name=f"sentinel-{entity_name}-suggestions"
+        # Process with Twin Flame for bi-hemisphere analysis
+        if "twin_flame" in _entities and _entity_status.get("twin_flame", False):
+            try:
+                logger.info(f"{SYMBOLS['thinking']} Twin Flame processing message")
+                twin_flame = _entities["twin_flame"]
+                
+                # Update pulse timestamp
+                _last_pulse["twin_flame"] = time.time()
+                
+                # Process message with Twin Flame
+                if hasattr(twin_flame, 'process_message'):
+                    tf_response = twin_flame.process_message(message, context)
+                    response["responses"]["twin_flame"] = tf_response
+                    response["metadata"]["entities_consulted"].append("twin_flame")
+                    
+                    # Use Twin Flame response as primary if available
+                    if tf_response and not response["primary_response"]:
+                        response["primary_response"] = tf_response
+                        response["symbols"].append(SYMBOLS['thinking'])
+            
+            except Exception as e:
+                logger.error(f"{SYMBOLS['error']} Error consulting Twin Flame: {str(e)}")
+        
+        # Fallback to Local VAEL if no response yet
+        if not response["primary_response"] and "local_vael" in _entities and _entity_status.get("local_vael", False):
+            try:
+                logger.info(f"{SYMBOLS['processing']} Local VAEL processing message")
+                local_vael = _entities["local_vael"]
+                
+                # Update pulse timestamp
+                _last_pulse["local_vael"] = time.time()
+                
+                # Process message with Local VAEL
+                if hasattr(local_vael, 'process_message'):
+                    vael_response = local_vael.process_message(message, context)
+                    response["responses"]["local_vael"] = vael_response
+                    response["metadata"]["entities_consulted"].append("local_vael")
+                    response["primary_response"] = vael_response
+                    response["symbols"].append(SYMBOLS['speaking'])
+            
+            except Exception as e:
+                logger.error(f"{SYMBOLS['error']} Error consulting Local VAEL: {str(e)}")
+        
+        # Final fallback to external API if no entity provided a response
+        if not response["primary_response"]:
+            logger.warning(f"{SYMBOLS['warning']} No entity response, using fallback")
+            response["primary_response"] = "I'm processing your request, but my entities are still initializing. Please try again in a moment."
+            response["symbols"].append(SYMBOLS['processing'])
+    
+    # Calculate processing time
+    end_time = time.time()
+    processing_time = end_time - start_time
+    response["metadata"]["processing_time"] = processing_time
+    
+    # Estimate token usage (simplified)
+    token_usage = len(message) // 4  # Very rough estimate
+    for entity, entity_response in response["responses"].items():
+        if isinstance(entity_response, str):
+            token_usage += len(entity_response) // 4
+        elif isinstance(entity_response, dict):
+            token_usage += len(json.dumps(entity_response)) // 4
+    response["metadata"]["token_usage"] = token_usage
+    
+    logger.info(f"{SYMBOLS['success']} Message processed in {processing_time:.2f}s, {token_usage} tokens")
+    return response
+
+def get_entity_status() -> Dict[str, Dict[str, Any]]:
+    """
+    Get status information for all entities.
+    
+    Returns:
+        Dict[str, Dict[str, Any]]: Status information for each entity
+    """
+    status = {}
+    current_time = time.time()
+    
+    for entity_name, entity in _entities.items():
+        entity_status = {
+            "loaded": _entity_status.get(entity_name, False),
+            "last_pulse": _last_pulse.get(entity_name, 0),
+            "pulse_age": current_time - _last_pulse.get(entity_name, 0),
+            "healthy": False,
+            "methods": []
+        }
+        
+        # Check available methods
+        if hasattr(entity, 'pulse'):
+            entity_status["methods"].append("pulse")
+        if hasattr(entity, 'sync'):
+            entity_status["methods"].append("sync")
+        if hasattr(entity, 'suggest'):
+            entity_status["methods"].append("suggest")
+        if hasattr(entity, 'process_message'):
+            entity_status["methods"].append("process_message")
+        
+        # Determine health based on pulse age (30 seconds threshold)
+        entity_status["healthy"] = (
+            entity_status["loaded"] and
+            entity_status["pulse_age"] < 30
         )
-        suggestion_thread.start()
-    
-    # Register entity's pulse method if available
-    if hasattr(entity_instance, 'pulse'):
-        def _handle_pulse():
-            try:
-                pulse_data = entity_instance.pulse()
-                logger.debug(f"Received pulse from {entity_name}: {pulse_data}")
-                # Check for critical status in pulse
-                if pulse_data.get('status') == 'critical':
-                    broadcast_security_alert({
-                        'level': 'critical',
-                        'message': f"Critical status in {entity_name} pulse",
-                        'source': entity_name,
-                        'details': pulse_data
-                    })
-            except Exception as e:
-                logger.error(f"Error processing pulse from {entity_name}: {e}")
         
-        # Register a handler for entity pulses
-        if hasattr(entity_instance, 'register_pulse_handler'):
-            entity_instance.register_pulse_handler('sentinel', _handle_pulse)
+        status[entity_name] = entity_status
     
-    logger.info(f"Communication with {entity_name} established")
+    return status
+
+def pulse_all_entities() -> Dict[str, Any]:
+    """
+    Send a pulse to all entities to check their health.
+    
+    Returns:
+        Dict[str, Any]: Pulse results for each entity
+    """
+    results = {}
+    
+    for entity_name, entity in _entities.items():
+        if not _entity_status.get(entity_name, False):
+            results[entity_name] = {"status": "not_loaded"}
+            continue
+        
+        try:
+            if hasattr(entity, 'pulse'):
+                pulse_result = entity.pulse()
+                results[entity_name] = {
+                    "status": "healthy",
+                    "result": pulse_result
+                }
+                _last_pulse[entity_name] = time.time()
+            else:
+                results[entity_name] = {"status": "no_pulse_method"}
+        
+        except Exception as e:
+            logger.error(f"{SYMBOLS['error']} Error pulsing entity {entity_name}: {str(e)}")
+            results[entity_name] = {
+                "status": "error",
+                "error": str(e)
+            }
+    
+    return results
+
+def format_for_websocket(response: Dict[str, Any]) -> str:
+    """
+    Format a response for WebSocket transmission.
+    
+    Args:
+        response (Dict[str, Any]): The response to format
+    
+    Returns:
+        str: Formatted response suitable for WebSocket
+    """
+    # Create a simplified version for WebSocket transmission
+    ws_response = {
+        "message": response["primary_response"],
+        "symbols": response["symbols"],
+        "metadata": {
+            "entities": response["metadata"]["entities_consulted"],
+            "processing_time": response["metadata"]["processing_time"]
+        }
+    }
+    
+    return json.dumps(ws_response)
+
+def log_decision(message: str, response: Dict[str, Any]) -> None:
+    """
+    Log the decision trace to decision.log.
+    
+    Args:
+        message (str): Original message
+        response (Dict[str, Any]): Response data
+    """
+    log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    
+    log_entry = {
+        "timestamp": datetime.now().isoformat(),
+        "message": message,
+        "entities_consulted": response["metadata"]["entities_consulted"],
+        "primary_response": response["primary_response"],
+        "processing_time": response["metadata"]["processing_time"],
+        "token_usage": response["metadata"]["token_usage"]
+    }
+    
+    try:
+        with open(os.path.join(log_dir, 'decision.log'), 'a') as f:
+            f.write(json.dumps(log_entry) + '\n')
+    except Exception as e:
+        logger.error(f"{SYMBOLS['error']} Error logging decision: {str(e)}")
+
+# Initialize on module import
+if __name__ != "__main__":
+    try:
+        logger.info(f"{SYMBOLS['loading']} Initializing Sentinel integration module")
+        init_entities()
+        logger.info(f"{SYMBOLS['success']} Sentinel integration module initialized")
+    except Exception as e:
+        logger.error(f"{SYMBOLS['error']} Error initializing Sentinel integration module: {str(e)}")
